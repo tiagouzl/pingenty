@@ -3,7 +3,7 @@ use pingenty::cli::{self, Cli, Commands};
 use pingenty::dns::{self, DnsEngine};
 use pingenty::ping::PingEngine;
 use pingenty::tui;
-use pingenty::watch::PacketWatcher;
+use pingenty::watch::{self, PacketWatcher};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -108,24 +108,49 @@ async fn main() -> Result<(), anyhow::Error> {
             interface,
             interval,
         } => {
-            let (watcher, iface) = PacketWatcher::new(interface)?;
-            println!(
-                ">> Capturando tráfego na interface: [{}]",
-                watcher.interface_name
-            );
-            println!(
-                ">> Dica: compare com: tcpdump -i {} -q -n",
-                watcher.interface_name
-            );
+            // Uma thread de captura por interface; erro numa não aborta as
+            // outras (aviso no stderr, segue com as válidas).
+            let specs = pingenty::watch::split_interface_spec(interface.as_deref());
+            let attempts: Vec<Option<String>> = if specs.is_empty() {
+                vec![None]
+            } else {
+                specs.into_iter().map(Some).collect()
+            };
+            let mut watchers = Vec::new();
+            for attempt in attempts {
+                let label = attempt.clone().unwrap_or_else(|| "<padrão>".into());
+                match PacketWatcher::new(attempt) {
+                    Ok((watcher, iface)) => {
+                        match PacketWatcher::start_capture_thread(
+                            iface,
+                            Arc::clone(&watcher.metrics),
+                        ) {
+                            Ok(()) => {
+                                println!(
+                                    ">> Capturando tráfego na interface: [{}]",
+                                    watcher.interface_name
+                                );
+                                watchers.push(watcher);
+                            }
+                            Err(e) => eprintln!(">> Ignorando '{label}': {e}"),
+                        }
+                    }
+                    Err(e) => eprintln!(">> Ignorando '{label}': {e}"),
+                }
+            }
+            if watchers.is_empty() {
+                return Err(anyhow::anyhow!("nenhuma interface pôde ser capturada"));
+            }
+            println!(">> Dica: compare com: tcpdump -i <iface> -q -n");
 
-            PacketWatcher::start_capture_thread(iface, Arc::clone(&watcher.metrics))?;
-
+            let all: Vec<Arc<watch::TrafficMetrics>> =
+                watchers.iter().map(|w| Arc::clone(&w.metrics)).collect();
             let mut timer = tokio::time::interval(Duration::from_millis(interval));
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        let p = watcher.metrics.global_protocols.snapshot();
-                        let flow_count = watcher.metrics.flows.read().map(|f| f.len()).unwrap_or(0);
+                        let p = watch::TrafficMetrics::sum_snapshots(&all);
+                        let flow_count = watch::TrafficMetrics::merge_flows(&all).len();
                         println!("--- [Métricas] Fluxos ativos: {flow_count} ---");
                         println!("TCP : {:<8} pacotes | {:<10} bytes", p.tcp_packets, p.tcp_bytes);
                         println!("UDP : {:<8} pacotes | {:<10} bytes", p.udp_packets, p.udp_bytes);

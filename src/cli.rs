@@ -52,7 +52,8 @@ pub enum Commands {
 
     /// Captura passiva e agregador de pacotes por protocolo e 5-tuple
     Watch {
-        /// Interface de rede (ex: eth0, wlan0, en0). Se omitida, usa a interface padrão
+        /// Interface(s) separadas por vírgula (ex: eth0,wlan0). Omitida = padrão.
+        /// Falha numa interface não aborta as outras.
         #[arg(short, long)]
         interface: Option<String>,
 

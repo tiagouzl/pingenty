@@ -138,6 +138,49 @@ impl TrafficMetrics {
                 .is_ok()
     }
 
+    /// Soma os snapshots de N interfaces (resumo do `watch` multi-interface).
+    pub fn sum_snapshots(all: &[Arc<TrafficMetrics>]) -> ProtocolSnapshot {
+        let mut acc = ProtocolSnapshot::default();
+        for m in all {
+            let p = m.global_protocols.snapshot();
+            acc.tcp_bytes += p.tcp_bytes;
+            acc.tcp_packets += p.tcp_packets;
+            acc.udp_bytes += p.udp_bytes;
+            acc.udp_packets += p.udp_packets;
+            acc.icmp_bytes += p.icmp_bytes;
+            acc.icmp_packets += p.icmp_packets;
+            acc.other_bytes += p.other_bytes;
+            acc.other_packets += p.other_packets;
+        }
+        acc
+    }
+
+    /// Junta fluxos de N interfaces por 5-tuple (mesmo tuple soma pacotes e
+    /// bytes, `last_seen` = maior), ordenado por bytes desc. Nota honesta:
+    /// interfaces que veem o mesmo tráfego (ex. `lo,lo`) somam dobrado — a
+    /// agregação soma, não deduplica.
+    pub fn merge_flows(all: &[Arc<TrafficMetrics>]) -> Vec<(FiveTuple, FlowStat)> {
+        let mut merged: HashMap<FiveTuple, FlowStat> = HashMap::new();
+        for m in all {
+            let Ok(flows) = m.flows.read() else {
+                continue;
+            };
+            for (tuple, flow) in flows.iter() {
+                merged
+                    .entry(tuple.clone())
+                    .and_modify(|e| {
+                        e.packet_count += flow.packet_count;
+                        e.byte_count += flow.byte_count;
+                        e.last_seen = e.last_seen.max(flow.last_seen);
+                    })
+                    .or_insert_with(|| flow.clone());
+            }
+        }
+        let mut top: Vec<_> = merged.into_iter().collect();
+        top.sort_by_key(|a| std::cmp::Reverse(a.1.byte_count));
+        top
+    }
+
     /// Contabiliza um pacote já classificado: contadores atômicos por protocolo
     /// (sem lock) + agregação por 5-tuple (com lock do mapa).
     ///
@@ -267,6 +310,18 @@ pub struct PacketWatcher {
     pub interface_name: String,
     /// Métricas compartilhadas (thread de captura escreve, TUI lê).
     pub metrics: Arc<TrafficMetrics>,
+}
+
+/// Divide `--interface` em nomes (`"eth0, wlan0"` → 2). `None`/vazio = `[]`
+/// (o chamador usa a interface padrão).
+pub fn split_interface_spec(spec: Option<&str>) -> Vec<String> {
+    spec.map_or_else(Vec::new, |s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 impl PacketWatcher {
@@ -520,8 +575,51 @@ mod tests {
         assert_eq!(m.flows.read().unwrap().len(), 1);
     }
 
-    // ---- Frames Ethernet montados byte a byte (sem privilégio de rede) ----
+    #[test]
+    fn split_interface_spec_aceita_lista_e_vazio() {
+        assert!(split_interface_spec(None).is_empty());
+        assert!(split_interface_spec(Some("  ")).is_empty());
+        assert_eq!(
+            split_interface_spec(Some("eth0, wlan0,,lo")),
+            vec!["eth0", "wlan0", "lo"]
+        );
+    }
 
+    fn tuple(proto: &'static str, dst: u8) -> FiveTuple {
+        FiveTuple {
+            src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, dst)),
+            src_port: 1234,
+            dst_port: 80,
+            protocol: proto,
+        }
+    }
+
+    #[test]
+    fn soma_e_merge_agregam_sem_concatenar() {
+        let a = Arc::new(TrafficMetrics::default());
+        let b = Arc::new(TrafficMetrics::default());
+        a.record(tuple("TCP", 2), 100);
+        a.record(tuple("TCP", 2), 100);
+        b.record(tuple("TCP", 2), 50);
+        b.record(tuple("UDP", 3), 60);
+        let all = vec![Arc::clone(&a), Arc::clone(&b)];
+
+        let sum = TrafficMetrics::sum_snapshots(&all);
+        assert_eq!(sum.tcp_packets, 3);
+        assert_eq!(sum.tcp_bytes, 250);
+        assert_eq!(sum.udp_packets, 1);
+
+        // Mesmo 5-tuple soma (não duplica a entrada); distintos coexistem;
+        // ordem por bytes desc.
+        let merged = TrafficMetrics::merge_flows(&all);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].1.packet_count, 3);
+        assert_eq!(merged[0].1.byte_count, 250);
+        assert_eq!(merged[1].1.byte_count, 60);
+    }
+
+    // ---- Frames Ethernet montados byte a byte (sem privilégio de rede) ----
     fn udp_bytes(src_port: u16, dst_port: u16) -> Vec<u8> {
         let mut udp = Vec::new();
         udp.extend_from_slice(&src_port.to_be_bytes());
