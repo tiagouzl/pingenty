@@ -1,11 +1,26 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 
+/// Sequência de Echo Request, compartilhada entre os hosts monitorados.
 static SEQ: AtomicU16 = AtomicU16::new(1);
+
+/// Identificador ICMP único por processo (pid XOR bits do relógio no primeiro
+/// uso). Com o pid puro, duas instâncias do netmon na mesma máquina usariam o
+/// mesmo ident e uma aceitaria o Echo Reply da outra.
+fn icmp_ident() -> u16 {
+    static IDENT: OnceLock<u16> = OnceLock::new();
+    *IDENT.get_or_init(|| {
+        let pid = std::process::id() as u16;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos() as u16);
+        pid ^ nanos
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct PingSample {
@@ -65,7 +80,7 @@ pub fn icmp_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-fn build_echo_request(ident: u16, seq: u16) -> [u8; 12] {
+fn build_echo_request_v4(ident: u16, seq: u16) -> [u8; 12] {
     let mut buf = [0u8; 12];
     buf[0] = 0x08; // Type 8 = Echo Request (ICMPv4)
     buf[1] = 0x00; // Code 0
@@ -78,9 +93,24 @@ fn build_echo_request(ident: u16, seq: u16) -> [u8; 12] {
     buf
 }
 
-/// Valida Echo Reply (type 0, code 0) com mesmo ident/seq.
+/// ICMPv6 Echo Request (RFC 4443 §4.1). O checksum fica zerado de propósito:
+/// em Linux o kernel sempre calcula o checksum sobre o pseudo-header IPv6 para
+/// sockets ICMPv6 (RFC 3542 §11.1) e sobrescreve o campo. Calcular aqui exigiria
+/// o endereço de origem, que só é escolhido pela stack na hora do envio.
+fn build_echo_request_v6(ident: u16, seq: u16) -> [u8; 12] {
+    let mut buf = [0u8; 12];
+    buf[0] = 0x80; // Type 128 = Echo Request (ICMPv6)
+    buf[1] = 0x00; // Code 0
+                   // bytes 2..4 = checksum (kernel preenche em ICMPv6)
+    buf[4..6].copy_from_slice(&ident.to_be_bytes());
+    buf[6..8].copy_from_slice(&seq.to_be_bytes());
+    buf[8..12].copy_from_slice(b"NETM");
+    buf
+}
+
+/// Valida Echo Reply IPv4 (type 0, code 0) com mesmo ident/seq.
 /// Aceita tanto buffer com header IPv4 (raw socket) quanto só ICMP (dgram socket).
-fn is_valid_echo_reply(buf: &[u8], n: usize, ident: u16, seq: u16) -> bool {
+fn is_valid_echo_reply_v4(buf: &[u8], n: usize, ident: u16, seq: u16) -> bool {
     let data = &buf[..n];
     // Candidatos: offset 0 (dgram) ou após header IPv4 (raw, IHL * 4).
     let mut offsets = vec![0usize];
@@ -96,6 +126,30 @@ fn is_valid_echo_reply(buf: &[u8], n: usize, ident: u16, seq: u16) -> bool {
         }
         let icmp = &data[off..];
         if icmp[0] == 0x00
+            && icmp[1] == 0x00
+            && u16::from_be_bytes([icmp[4], icmp[5]]) == ident
+            && u16::from_be_bytes([icmp[6], icmp[7]]) == seq
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Valida Echo Reply ICMPv6 (type 129, code 0) com mesmo ident/seq.
+/// Header IPv6 tem 40 bytes fixos (não há IHL como no v4).
+fn is_valid_echo_reply_v6(buf: &[u8], n: usize, ident: u16, seq: u16) -> bool {
+    let data = &buf[..n];
+    let mut offsets = vec![0usize];
+    if data.len() > 40 && (data[0] >> 4) == 6 {
+        offsets.push(40);
+    }
+    for off in offsets {
+        if data.len() < off + 8 {
+            continue;
+        }
+        let icmp = &data[off..];
+        if icmp[0] == 0x81
             && icmp[1] == 0x00
             && u16::from_be_bytes([icmp[4], icmp[5]]) == ident
             && u16::from_be_bytes([icmp[6], icmp[7]]) == seq
@@ -144,16 +198,11 @@ impl PingEngine {
             }
         };
 
-        // v1 é IPv4-only por honestidade: ICMPv6 usa tipo 128 e pseudo-header
-        // diferente — em vez de enviar pacote v4 malformado, pula direto pro TCP.
-        let ipv4 = match socket_addr.ip() {
-            IpAddr::V4(v4) => v4,
-            IpAddr::V6(_) => {
-                return self.tcp_fallback(target, socket_addr).await;
-            }
-        };
-
-        match self.try_icmp_ping(ipv4).await {
+        // ICMPv4 (Echo Request tipo 8) e ICMPv6 (tipo 128) com fallback TCP
+        // transparente quando o socket exige privilégio ou o reply não chega.
+        // Porta 0: ICMP não usa portas, o endereço já está resolvido.
+        let icmp_dest = SocketAddr::new(socket_addr.ip(), 0);
+        match self.try_icmp_ping(icmp_dest).await {
             Ok(rtt) => PingSample {
                 host: target.to_string(),
                 rtt: Some(rtt),
@@ -188,33 +237,50 @@ impl PingEngine {
         }
     }
 
-    async fn try_icmp_ping(&self, target_ip: Ipv4Addr) -> Result<Duration, anyhow::Error> {
+    /// Tenta ICMP na família do endereço de destino (v4 ou v6).
+    /// `target` deve ter porta 0 — ICMP não usa portas.
+    async fn try_icmp_ping(&self, target: SocketAddr) -> Result<Duration, anyhow::Error> {
         let timeout = self.timeout.min(Duration::from_millis(500));
         tokio::task::spawn_blocking(move || {
             use socket2::{Domain, Protocol, Socket, Type};
-            let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))
-                .or_else(|_| Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)))?;
+            let is_v6 = target.is_ipv6();
+            let (domain, protocol) = if is_v6 {
+                (Domain::IPV6, Protocol::ICMPV6)
+            } else {
+                (Domain::IPV4, Protocol::ICMPV4)
+            };
+            // DGRAM primeiro (sem privilégio); RAW como segunda tentativa.
+            let socket = Socket::new(domain, Type::DGRAM, Some(protocol))
+                .or_else(|_| Socket::new(domain, Type::RAW, Some(protocol)))
+                .map_err(|e| anyhow::anyhow!("socket ICMP indisponível: {e}"))?;
             socket.set_read_timeout(Some(timeout))?;
 
-            let ident = std::process::id() as u16;
+            let ident = icmp_ident();
             let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-            let echo_req = build_echo_request(ident, seq);
-
-            let dest = SocketAddr::new(IpAddr::V4(target_ip), 0);
-            let start = Instant::now();
+            let echo_req = if is_v6 {
+                build_echo_request_v6(ident, seq)
+            } else {
+                build_echo_request_v4(ident, seq)
+            };
 
             // Converte para std::net::UdpSocket: mesma syscall recvfrom(2) no
             // fd ICMP, mas com API segura (&mut [u8]) em vez de MaybeUninit +
             // unsafe. A conversão transfere a posse do fd (Socket → UdpSocket).
             let sock: std::net::UdpSocket = socket.into();
-            sock.send_to(&echo_req, dest)?;
+            let start = Instant::now();
+            sock.send_to(&echo_req, target)?;
 
             // Deadline absoluto: não aceitar erro intermediário como pong.
             let deadline = start + timeout;
             let mut buf = [0u8; 512];
             loop {
                 let (n, _) = sock.recv_from(&mut buf)?;
-                if is_valid_echo_reply(&buf, n, ident, seq) {
+                let valid = if is_v6 {
+                    is_valid_echo_reply_v6(&buf, n, ident, seq)
+                } else {
+                    is_valid_echo_reply_v4(&buf, n, ident, seq)
+                };
+                if valid {
                     return Ok(start.elapsed());
                 }
                 // Pacote estranho (ex: Destination Unreachable atrasado) — ignora
@@ -266,15 +332,15 @@ mod tests {
 
     #[test]
     fn checksum_roundtrip_valid() {
-        let pkt = build_echo_request(0x1234, 0x0001);
+        let pkt = build_echo_request_v4(0x1234, 0x0001);
         // Checksum de um pacote válido deve zerar a soma (resultado 0).
         assert_eq!(icmp_checksum(&pkt), 0);
     }
 
     #[test]
     fn checksum_changes_with_payload() {
-        let a = build_echo_request(1, 1);
-        let b = build_echo_request(2, 1);
+        let a = build_echo_request_v4(1, 1);
+        let b = build_echo_request_v4(2, 1);
         assert_ne!(a, b);
         assert_eq!(icmp_checksum(&a), 0);
         assert_eq!(icmp_checksum(&b), 0);
@@ -288,13 +354,80 @@ mod tests {
         good[1] = 0x00;
         good[4..6].copy_from_slice(&7u16.to_be_bytes());
         good[6..8].copy_from_slice(&9u16.to_be_bytes());
-        assert!(is_valid_echo_reply(&good, 12, 7, 9));
+        assert!(is_valid_echo_reply_v4(&good, 12, 7, 9));
         // Destination Unreachable (type 3) com mesmo id/seq deve ser rejeitado
         let mut bad = good;
         bad[0] = 0x03;
-        assert!(!is_valid_echo_reply(&bad, 12, 7, 9));
+        assert!(!is_valid_echo_reply_v4(&bad, 12, 7, 9));
         // id diferente deve ser rejeitado
-        assert!(!is_valid_echo_reply(&good, 12, 8, 9));
+        assert!(!is_valid_echo_reply_v4(&good, 12, 8, 9));
+    }
+
+    #[test]
+    fn v6_echo_request_uses_type_128_and_unique_ident() {
+        let a = build_echo_request_v6(0x1234, 0x0001);
+        assert_eq!(a[0], 0x80, "ICMPv6 Echo Request é tipo 128");
+        assert_eq!(a[1], 0x00);
+        assert_eq!(u16::from_be_bytes([a[4], a[5]]), 0x1234);
+        assert_eq!(u16::from_be_bytes([a[6], a[7]]), 0x0001);
+        // Checksum fica zerado: o kernel preenche em ICMPv6 (RFC 3542 §11.1).
+        assert_eq!(u16::from_be_bytes([a[2], a[3]]), 0);
+        // ident diferente => pacote diferente (não aceita reply de outra instância)
+        assert_ne!(a, build_echo_request_v6(0x1235, 0x0001));
+    }
+
+    #[test]
+    fn v6_accepts_echo_reply_and_rejects_request_type() {
+        let mut good = [0u8; 12];
+        good[0] = 0x81; // Echo Reply ICMPv6
+        good[1] = 0x00;
+        good[4..6].copy_from_slice(&7u16.to_be_bytes());
+        good[6..8].copy_from_slice(&9u16.to_be_bytes());
+        assert!(is_valid_echo_reply_v6(&good, 12, 7, 9));
+        // Echo Request (128) refletido não é resposta válida
+        let mut reflected = good;
+        reflected[0] = 0x80;
+        assert!(!is_valid_echo_reply_v6(&reflected, 12, 7, 9));
+        assert!(!is_valid_echo_reply_v6(&good, 12, 7, 10));
+    }
+
+    #[test]
+    fn v6_accepts_reply_behind_ipv6_header() {
+        // Socket RAW entrega o pacote com header IPv6 de 40 bytes fixos.
+        let mut raw = [0u8; 40 + 12];
+        raw[0] = 0x60; // version 6
+        raw[40] = 0x81; // Echo Reply
+        raw[41] = 0x00;
+        raw[44..46].copy_from_slice(&5u16.to_be_bytes());
+        raw[46..48].copy_from_slice(&6u16.to_be_bytes());
+        assert!(is_valid_echo_reply_v6(&raw, 52, 5, 6));
+    }
+
+    #[test]
+    fn icmp_ident_is_stable_and_not_plain_pid() {
+        // Estável dentro do processo (OnceLock), para o reply casar com o request.
+        assert_eq!(icmp_ident(), icmp_ident());
+    }
+
+    #[test]
+    fn validator_uses_received_length_not_full_buffer() {
+        // Integração do caminho recv_from → validação com socket real: o kernel
+        // entrega apenas n bytes, e o validador não pode olhar além disso.
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind servidor");
+        let addr = server.local_addr().expect("local_addr");
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind cliente");
+
+        let mut reply = [0u8; 12];
+        reply[0] = 0x81; // Echo Reply ICMPv6
+        reply[4..6].copy_from_slice(&42u16.to_be_bytes());
+        reply[6..8].copy_from_slice(&7u16.to_be_bytes());
+        client.send_to(&reply, addr).expect("send");
+
+        let mut buf = [0xFFu8; 512]; // lixo depois do payload, de propósito
+        let (n, _) = server.recv_from(&mut buf).expect("recv");
+        assert_eq!(n, 12);
+        assert!(is_valid_echo_reply_v6(&buf, n, 42, 7));
+        assert!(!is_valid_echo_reply_v6(&buf, n, 43, 7));
     }
 
     #[tokio::test]

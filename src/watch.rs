@@ -9,7 +9,7 @@ use pnet::packet::Packet;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -71,10 +71,44 @@ pub struct ProtocolSnapshot {
     pub other_packets: u64,
 }
 
+/// Teto de fluxos mantidos em memória: acima disso, varredura imediata.
+const FLOW_MAX_ENTRIES: usize = 10_000;
+/// Fluxo sem tráfego por mais que isso é considerado morto.
+const FLOW_IDLE_SECS: u64 = 300;
+/// Intervalo mínimo entre varreduras periódicas de fluxos mortos.
+const FLOW_SWEEP_INTERVAL_SECS: u64 = 60;
+
 #[derive(Debug, Default)]
 pub struct TrafficMetrics {
     pub global_protocols: ProtocolCounters,
     pub flows: RwLock<HashMap<FiveTuple, FlowStat>>,
+    /// Instante da última varredura, em segundos desde `epoch`.
+    last_sweep_secs: AtomicU64,
+    /// Referência monotônica para converter `Instant` em segundos. Definida no
+    /// primeiro pacote e nunca alterada depois.
+    epoch: OnceLock<Instant>,
+}
+
+impl TrafficMetrics {
+    /// Varredura de flows inativos agendada por tempo (no máximo uma a cada
+    /// `FLOW_SWEEP_INTERVAL_SECS`). Mantém a memória previsível mesmo abaixo do
+    /// teto de entradas, onde o backstop por tamanho nunca dispara.
+    fn due_for_sweep(&self, now: Instant) -> bool {
+        let epoch = *self.epoch.get_or_init(|| now);
+        let secs = now.duration_since(epoch).as_secs();
+        let last = self.last_sweep_secs.load(Ordering::Relaxed);
+        secs >= last.saturating_add(FLOW_SWEEP_INTERVAL_SECS)
+            && self
+                .last_sweep_secs
+                .compare_exchange(last, secs, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+}
+
+/// Fluxo sem tráfego por mais de `FLOW_IDLE_SECS` — candidato a remoção.
+fn is_stale(stat: &FlowStat, now: Instant) -> bool {
+    stat.last_seen
+        .is_some_and(|seen| now.duration_since(seen).as_secs() >= FLOW_IDLE_SECS)
 }
 
 pub struct PacketWatcher {
@@ -246,17 +280,18 @@ impl PacketWatcher {
             protocol: proto_str,
         };
 
+        let now = Instant::now();
+        let sweep_due = metrics.due_for_sweep(now);
+
         if let Ok(mut flows) = metrics.flows.write() {
             let flow = flows.entry(tuple).or_default();
             flow.byte_count += raw_len;
             flow.packet_count += 1;
-            flow.last_seen = Some(Instant::now());
+            flow.last_seen = Some(now);
 
-            if flows.len() > 10_000 {
-                flows.retain(|_, v| {
-                    v.last_seen
-                        .is_some_and(|seen| seen.elapsed().as_secs() < 300)
-                });
+            // Varredura por tempo (máx. 1x por minuto) ou backstop por tamanho.
+            if sweep_due || flows.len() > FLOW_MAX_ENTRIES {
+                flows.retain(|_, v| !is_stale(v, now));
             }
         }
         // Se o lock falhar (poisoned), o pacote é descartado: captura nunca trava.
@@ -268,6 +303,7 @@ mod tests {
     use super::*;
     use pnet::packet::ip::IpNextHeaderProtocols;
     use std::net::Ipv4Addr;
+    use std::time::Duration;
 
     #[test]
     fn counters_increment_without_lock_contention_path() {
@@ -283,6 +319,72 @@ mod tests {
         let snap = m.global_protocols.snapshot();
         assert_eq!(snap.tcp_packets, 1);
         assert_eq!(snap.tcp_bytes, 100);
+        assert_eq!(m.flows.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_predicate_uses_idle_window() {
+        let now = Instant::now();
+        let fresh = FlowStat {
+            last_seen: Some(now - Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let dead = FlowStat {
+            last_seen: Some(now - Duration::from_secs(FLOW_IDLE_SECS + 1)),
+            ..Default::default()
+        };
+        // sem last_seen (nunca visto) não é considerado morto por aqui
+        let unseen = FlowStat::default();
+        assert!(!is_stale(&fresh, now));
+        assert!(is_stale(&dead, now));
+        assert!(!is_stale(&unseen, now));
+    }
+
+    #[test]
+    fn sweep_schedule_respects_interval() {
+        let m = TrafficMetrics::default();
+        let t0 = Instant::now();
+        // Primeira chamada define a epoch: nada a varrer ainda.
+        assert!(!m.due_for_sweep(t0));
+        assert!(!m.due_for_sweep(t0 + Duration::from_secs(30)));
+        assert!(m.due_for_sweep(t0 + Duration::from_secs(FLOW_SWEEP_INTERVAL_SECS + 1)));
+        // Logo depois de varrer, não varre de novo.
+        assert!(!m.due_for_sweep(t0 + Duration::from_secs(FLOW_SWEEP_INTERVAL_SECS + 2)));
+    }
+
+    #[test]
+    fn sweep_uses_size_backstop_even_without_schedule() {
+        // Um fluxo morto é removido quando o mapa passa do teto, sem esperar
+        // pelo agendamento temporal.
+        let m = Arc::new(TrafficMetrics::default());
+        {
+            let mut flows = m.flows.write().unwrap();
+            for i in 0..(FLOW_MAX_ENTRIES + 1) {
+                flows.insert(
+                    FiveTuple {
+                        src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, (i >> 8) as u8, i as u8)),
+                        dst_ip: IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)),
+                        src_port: i as u16,
+                        dst_port: 80,
+                        protocol: "TCP",
+                    },
+                    FlowStat {
+                        packet_count: 1,
+                        byte_count: 1,
+                        last_seen: Some(Instant::now() - Duration::from_secs(FLOW_IDLE_SECS + 60)),
+                    },
+                );
+            }
+        }
+        PacketWatcher::process_l4(
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+            IpNextHeaderProtocols::Tcp,
+            &[],
+            100,
+            &m,
+        );
+        // Todos os mortos saíram; sobrou só o fluxo do pacote novo.
         assert_eq!(m.flows.read().unwrap().len(), 1);
     }
 }

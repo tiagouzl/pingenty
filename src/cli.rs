@@ -13,7 +13,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Medição de latência ICMP com fallback transparente para TCP
+    /// Medição de latência ICMP/ICMPv6 com fallback transparente para TCP
     Ping {
         /// Hostnames ou endereços IP para monitorar
         #[arg(required = true)]
