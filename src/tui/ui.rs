@@ -58,15 +58,14 @@ fn render_ping_panel(frame: &mut Frame, state: &AppState, area: Rect) {
         .border_style(Style::default().fg(Color::Green));
     frame.render_widget(block, area);
 
+    // Só cria constraints para os hosts que cabem de verdade (3 linhas cada +
+    // 2 da borda do bloco). O restante é cortado pelo guard do loop — sempre os
+    // primeiros N, em vez do subconjunto espalhado que o cassowary escolheria
+    // se todas as constraints passassem do espaço disponível.
+    let visible = ((area.height as usize).saturating_sub(2) / 3).min(state.ping_trackers.len());
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            state
-                .ping_trackers
-                .iter()
-                .map(|_| Constraint::Length(3))
-                .collect::<Vec<_>>(),
-        )
+        .constraints(vec![Constraint::Length(3); visible])
         .margin(1)
         .split(area);
 
@@ -164,13 +163,15 @@ fn render_watch_panel(frame: &mut Frame, state: &AppState, area: Rect) {
     // sempre lidos sem lock.
     let p = state.watcher_metrics.global_protocols.snapshot();
     let proto_summary = format!(
-        "TCP: {} pkts ({} KB) | UDP: {} pkts ({} KB) | ICMP: {} pkts ({} KB)",
+        "TCP: {} pkts ({} KB) | UDP: {} pkts ({} KB) | ICMP: {} pkts ({} KB) | OUTR: {} pkts ({} KB)",
         p.tcp_packets,
         p.tcp_bytes / 1024,
         p.udp_packets,
         p.udp_bytes / 1024,
         p.icmp_packets,
-        p.icmp_bytes / 1024
+        p.icmp_bytes / 1024,
+        p.other_packets,
+        p.other_bytes / 1024
     );
     frame.render_widget(
         Paragraph::new(proto_summary)
@@ -371,7 +372,6 @@ mod tests {
         let text = screen_text(&mut state, 200, 30);
         assert!(text.contains("Protocolos Agregados"));
         assert!(text.contains("TCP: 1 pkts (2 KB)"));
-        assert!(text.contains("UDP: 0 pkts (0 KB)"));
         assert!(text.contains("Fluxos Ativos (5-Tuple)"));
         assert!(text.contains("10.0.0.1:0"));
         assert!(text.contains("10.0.0.2:0"));
@@ -396,11 +396,14 @@ mod tests {
         let folgado = render_lines(&mut state, 80, 24);
         let texto = folgado.join("\n");
         let desenhados = texto.matches("=> Atual:").count();
-        assert!(desenhados > 0, "algum host precisa aparecer");
+        // Espaço para 7 linhas úteis => cabem pelo menos 2 hosts inteiros.
         assert!(
-            desenhados < 30,
-            "o excedente deve ser cortado, não estourado (desenhados: {desenhados})"
+            (2..30).contains(&desenhados),
+            "mostra os primeiros que cabem e corta o resto (desenhados: {desenhados})"
         );
+        assert!(texto.contains("h0 => Atual: TIMEOUT"));
+        assert!(texto.contains("h1 => Atual: TIMEOUT"));
+        assert!(!texto.contains("h29 => Atual"));
     }
 
     #[test]

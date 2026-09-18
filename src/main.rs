@@ -146,6 +146,9 @@ async fn main() -> Result<(), anyhow::Error> {
             interface,
             ping_interval,
             ping_timeout,
+            dns_timeout,
+            dns_interval,
+            tcp_port,
         } => {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
@@ -168,7 +171,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let (ping_tx, ping_rx) = mpsc::unbounded_channel();
             let (dns_tx, dns_rx) = mpsc::unbounded_channel();
 
-            let ping_engine = Arc::new(PingEngine::new(ping_interval, ping_timeout, 80));
+            let ping_engine = Arc::new(PingEngine::new(ping_interval, ping_timeout, tcp_port));
             for h in p_hosts.clone() {
                 let eng = Arc::clone(&ping_engine);
                 let tx = ping_tx.clone();
@@ -180,13 +183,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 });
             }
 
-            let dns_engine = Arc::new(DnsEngine::new(2000)?);
+            let dns_engine = Arc::new(DnsEngine::new(dns_timeout)?);
             tokio::spawn(async move {
                 dns_engine
                     .run_continuous(
                         d_domains,
                         cli::RecordTypeCli::A,
-                        Duration::from_secs(3),
+                        Duration::from_millis(dns_interval),
                         dns_tx,
                     )
                     .await;

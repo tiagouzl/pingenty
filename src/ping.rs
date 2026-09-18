@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, ToSocketAddrs};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -176,7 +176,10 @@ impl PingEngine {
     }
 
     pub async fn ping_once(&self, target: &str) -> PingSample {
-        let socket_addr = match format!("{}:{}", target, self.tcp_port).to_socket_addrs() {
+        // `fe80::1%wlan0` precisa ser separado antes da resolução: o `%` não é
+        // parte do endereço e o resolver não entende zona.
+        let (host, zone) = split_zone(target);
+        let socket_addr = match format!("{}:{}", host, self.tcp_port).to_socket_addrs() {
             Ok(mut addrs) => match addrs.next() {
                 Some(addr) => addr,
                 None => {
@@ -198,6 +201,10 @@ impl PingEngine {
             }
         };
 
+        // Link-local IPv6 precisa de scope_id (zona) antes de qualquer envio —
+        // isso vale para o ICMP e para o fallback TCP conectando no mesmo addr.
+        let socket_addr = with_link_local_scope(socket_addr, zone);
+
         // ICMPv4 (Echo Request tipo 8) e ICMPv6 (tipo 128) com fallback TCP
         // transparente quando o socket exige privilégio ou o reply não chega.
         // Porta 0: ICMP não usa portas, o endereço já está resolvido.
@@ -212,7 +219,68 @@ impl PingEngine {
             Err(_) => self.tcp_fallback(target, socket_addr).await,
         }
     }
+}
 
+/// fe80::/10: primeiros 10 bits = 1111 1110 10xx xxxx.
+/// (Funções livres de propósito: pura manipulação de endereço, testável sem rede;
+/// `PingEngine` só as chama em `ping_once`.)
+fn is_link_local(ip: &Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
+}
+
+/// Separa "host" de "%zona" (sintaxe `fe80::1%wlan0`). Hostnames não contêm
+/// `%`, então só literais IPv6 são afetados.
+fn split_zone(target: &str) -> (&str, Option<&str>) {
+    match target.rsplit_once('%') {
+        Some((host, zone)) if !zone.is_empty() => (host, Some(zone)),
+        _ => (target, None),
+    }
+}
+
+/// Primeira interface não-loopback com algum endereço link-local. Chute honesto
+/// para quando o literal não traz zona — no pior caso, o ICMP dá timeout e
+/// segue o caminho normal (fallback TCP).
+fn first_link_local_iface() -> Option<u32> {
+    pnet::datalink::interfaces().into_iter().find_map(|iface| {
+        let has_ll = iface
+            .ips
+            .iter()
+            .any(|net| matches!(net.ip(), IpAddr::V6(ip) if is_link_local(&ip)));
+        (!iface.is_loopback() && has_ll).then_some(iface.index)
+    })
+}
+
+/// Anexa scope_id a link-local (`fe80::/10`) que veio sem. Sem isso o kernel
+/// rejeita o envio (EINVAL) e o host cairia direto no fallback — que também
+/// falha sem zona. Zona explícita (`%wlan0`) vence quando a interface
+/// existe; zona inexistente e sem-candidata voltam intocados.
+fn with_link_local_scope(addr: SocketAddr, zone: Option<&str>) -> SocketAddr {
+    let SocketAddr::V6(v6) = addr else {
+        return addr;
+    };
+    if v6.scope_id() != 0 || !is_link_local(v6.ip()) {
+        return addr;
+    }
+    let index = match zone {
+        // Explícita mas inexistente: passa intocado em vez de chutar outra
+        // interface em silêncio (o envio falha claro, o TCP também).
+        Some(name) => pnet::datalink::interfaces()
+            .into_iter()
+            .find(|iface| iface.name == name)
+            .map(|iface| iface.index),
+        // Sem zona: palpite honesto; sem candidata, volta intocado.
+        None => first_link_local_iface(),
+    };
+    match index {
+        Some(idx) => {
+            let scoped = SocketAddrV6::new(*v6.ip(), v6.port(), v6.flowinfo(), idx);
+            SocketAddr::V6(scoped)
+        }
+        None => addr,
+    }
+}
+
+impl PingEngine {
     async fn tcp_fallback(&self, target: &str, socket_addr: SocketAddr) -> PingSample {
         let tcp_start = Instant::now();
         match tokio::time::timeout(self.timeout, TcpStream::connect(socket_addr)).await {
@@ -407,6 +475,42 @@ mod tests {
     fn icmp_ident_is_stable_and_not_plain_pid() {
         // Estável dentro do processo (OnceLock), para o reply casar com o request.
         assert_eq!(icmp_ident(), icmp_ident());
+    }
+
+    #[test]
+    fn zona_e_separada_antes_da_resolucao() {
+        assert_eq!(split_zone("fe80::1%wlan0"), ("fe80::1", Some("wlan0")));
+        assert_eq!(split_zone("fe80::1"), ("fe80::1", None));
+        assert_eq!(split_zone("1.1.1.1"), ("1.1.1.1", None));
+        assert_eq!(split_zone("host.example"), ("host.example", None));
+        // Zona vazia não é zona.
+        assert_eq!(split_zone("fe80::1%"), ("fe80::1%", None));
+    }
+
+    #[test]
+    fn prefixo_link_local_reconhecido() {
+        use std::str::FromStr;
+        let ll = Ipv6Addr::from_str("fe80::1").unwrap();
+        assert!(is_link_local(&ll));
+        // fe90:: também é link-local (fe80::/10 cobre fe80..febb).
+        assert!(is_link_local(&Ipv6Addr::from_str("feb0::5").unwrap()));
+        assert!(!is_link_local(&Ipv6Addr::from_str("2001:db8::1").unwrap()));
+        assert!(!is_link_local(&Ipv6Addr::from_str("::1").unwrap()));
+    }
+
+    #[test]
+    fn scope_nao_mexem_em_nao_link_local() {
+        // Global unicast passa intocado, mesmo com zona explícita.
+        let global: SocketAddr = "[2001:db8::1]:80".parse().unwrap();
+        assert_eq!(with_link_local_scope(global, None), global);
+        let v4: SocketAddr = "1.1.1.1:80".parse().unwrap();
+        assert_eq!(with_link_local_scope(v4, None), v4);
+        // Zona explícita inexistente: intocado, nunca chute silencioso.
+        let ll: SocketAddr = "[fe80::1]:80".parse().unwrap();
+        assert_eq!(
+            with_link_local_scope(ll, Some("iface-que-nao-existe-xyz")),
+            ll
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 ![Dashboard](demo.gif)
 
-Monitor de latência (ICMP com fallback TCP), resolução DNS com medição de RTT
-e captura passiva de tráfego com agregação por protocolo e por conexão (5-tuple),
-com dashboard TUI ao vivo.
+Monitor de latência (ICMP/ICMPv6 com fallback TCP), resolução DNS com medição de
+RTT e captura passiva de tráfego (incluindo VLAN 802.1Q/QinQ) com agregação por
+protocolo e por conexão (5-tuple), com dashboard TUI ao vivo.
 
 ## Limitações honestas da v1
 
@@ -26,9 +26,10 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
   zerado de propósito: em Linux o kernel sempre calcula o checksum sobre o
   pseudo-header para sockets ICMPv6 (RFC 3542 §11.1) — o endereço de origem só é
   escolhido pela stack no envio, então calculá-lo no userspace seria chute.
-- **IPv6 link-local (`fe80::/10`) sem zona de interface** cai no fallback TCP:
-  `Send to` precisa de `scope_id`, e `to_socket_addrs` não traz a zona de um
-  literal como `fe80::1`.
+- **IPv6 link-local (`fe80::/10`)**: zona explícita (`fe80::1%wlan0`) vence
+  quando a interface existe; zona inexistente passa intocado (erro claro, nunca
+  chute silencioso); sem zona, o netmon usa a primeira interface não-loopback
+  com endereço link-local. Sem candidata, segue o caminho normal.
 - **Ident ICMP único por processo** (pid XOR bits do relógio), para que duas
   instâncias do netmon na mesma máquina não aceitem o Echo Reply uma da outra.
 - **Lock global no mapa de flows** (`watch.rs`) — medido, não chutado (ver
@@ -100,9 +101,11 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
 
 ```bash
 netmon dashboard --ping-hosts "1.1.1.1,8.8.8.8" --dns-domains "github.com,cloudflare.com"
-netmon dashboard --ping-interval 500 --ping-timeout 1000   # knobs do dashboard
+netmon dashboard --ping-interval 500 --ping-timeout 1000 --tcp-port 443
+netmon dashboard --dns-interval 5000 --dns-timeout 1500
 netmon ping 1.1.1.1 8.8.8.8 --interval 1000
 netmon ping 2606:4700:4700::1111                            # ICMPv6
+netmon ping fe80::1%wlan0                                   # link-local com zona
 netmon dns cloudflare.com archlinux.org --record-type a
 netmon watch --interface eth0 --interval 1000
 # validar lado a lado: sudo tcpdump -i eth0 -q -n
@@ -120,4 +123,7 @@ domínio inexistente como estado, contadores do watcher, histórico da TUI,
 e (v2) construção/validação de Echo Request/Reply **ICMPv6** (tipo 128/129,
 ident/seq, buffer com header IPv6), estabilidade do ident por processo,
 predicado de flow morto, agendamento da varredura periódica e o backstop por
-tamanho do mapa de flows.
+tamanho do mapa de flows, remoção de tags VLAN 802.1Q/QinQ (incluindo regressão
+do branch IPv6), distinção tipada NXDOMAIN/NODATA, primeiros-N-hosts no painel,
+`scope_id` para link-local IPv6, knobs do dashboard e da CLI como testes de
+parse.

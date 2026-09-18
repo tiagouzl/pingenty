@@ -79,6 +79,18 @@ pub enum Commands {
         /// Timeout de cada ping em milissegundos
         #[arg(long, default_value_t = 1500)]
         ping_timeout: u64,
+
+        /// Timeout por consulta DNS em milissegundos
+        #[arg(long, default_value_t = 2000)]
+        dns_timeout: u64,
+
+        /// Intervalo entre rodadas DNS em milissegundos (mínimo 500)
+        #[arg(long, default_value_t = 3000, value_parser = clap::value_parser!(u64).range(500..))]
+        dns_interval: u64,
+
+        /// Porta TCP para o fallback do ping quando o ICMP é inviável
+        #[arg(long, default_value_t = 80)]
+        tcp_port: u16,
     },
 }
 
@@ -94,4 +106,56 @@ pub enum RecordTypeCli {
     Mx,
     #[value(name = "txt")]
     Txt,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_aceita_knobs_de_ping_e_dns() {
+        let cli = Cli::try_parse_from([
+            "netmon",
+            "dashboard",
+            "--ping-hosts",
+            "a",
+            "--dns-domains",
+            "b",
+            "--ping-interval",
+            "500",
+            "--ping-timeout",
+            "800",
+            "--dns-timeout",
+            "900",
+            "--dns-interval",
+            "1200",
+            "--tcp-port",
+            "443",
+        ])
+        .expect("parse do dashboard");
+        match cli.command {
+            Commands::Dashboard {
+                ping_interval,
+                ping_timeout,
+                dns_timeout,
+                dns_interval,
+                tcp_port,
+                ..
+            } => {
+                assert_eq!(ping_interval, 500);
+                assert_eq!(ping_timeout, 800);
+                assert_eq!(dns_timeout, 900);
+                assert_eq!(dns_interval, 1200);
+                assert_eq!(tcp_port, 443);
+            }
+            _ => panic!("deveria ser dashboard"),
+        }
+    }
+
+    #[test]
+    fn intervalos_minimos_sao_rejeitados() {
+        assert!(Cli::try_parse_from(["netmon", "ping", "--interval", "49", "h"]).is_err());
+        assert!(Cli::try_parse_from(["netmon", "dashboard", "--dns-interval", "499"]).is_err());
+        assert!(Cli::try_parse_from(["netmon", "ping", "--interval", "50", "h"]).is_ok());
+    }
 }
