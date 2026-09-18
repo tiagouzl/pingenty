@@ -1,4 +1,4 @@
-# Demo do dashboard netmon para README (gera demo.gif).
+# Demo do dashboard pingenty para README (gera demo.gif).
 # Requer: cargo build --release + setcap (ver README) e tráfego de fundo.
 # Uso: vhs demo.tape
 Output demo.gif

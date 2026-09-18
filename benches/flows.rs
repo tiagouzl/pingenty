@@ -11,8 +11,8 @@
 //! Rodar: `cargo bench`
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use netmon::ping::icmp_checksum;
-use netmon::watch::{FiveTuple, FlowStat, TrafficMetrics};
+use pingenty::ping::icmp_checksum;
+use pingenty::watch::{FiveTuple, FlowStat, TrafficMetrics};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -77,7 +77,7 @@ fn bench_checksum(c: &mut Criterion) {
     });
 }
 
-/// Custo por pacote, uma thread: o caminho exato do `netmon watch`.
+/// Custo por pacote, uma thread: o caminho exato do `pingenty watch`.
 fn bench_pacote_individual(c: &mut Criterion) {
     let pool = tuple_pool(FLOW_POOL);
     let mut group = c.benchmark_group("pacote_individual");

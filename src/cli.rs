@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "netmon",
+    name = "pingenty",
     version,
     about = "Network Monitor assíncrono em tempo real com TUI"
 )]
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn dashboard_aceita_knobs_de_ping_e_dns() {
         let cli = Cli::try_parse_from([
-            "netmon",
+            "pingenty",
             "dashboard",
             "--ping-hosts",
             "a",
@@ -154,8 +154,8 @@ mod tests {
 
     #[test]
     fn intervalos_minimos_sao_rejeitados() {
-        assert!(Cli::try_parse_from(["netmon", "ping", "--interval", "49", "h"]).is_err());
-        assert!(Cli::try_parse_from(["netmon", "dashboard", "--dns-interval", "499"]).is_err());
-        assert!(Cli::try_parse_from(["netmon", "ping", "--interval", "50", "h"]).is_ok());
+        assert!(Cli::try_parse_from(["pingenty", "ping", "--interval", "49", "h"]).is_err());
+        assert!(Cli::try_parse_from(["pingenty", "dashboard", "--dns-interval", "499"]).is_err());
+        assert!(Cli::try_parse_from(["pingenty", "ping", "--interval", "50", "h"]).is_ok());
     }
 }

@@ -1,9 +1,9 @@
 use clap::Parser;
-use netmon::cli::{self, Cli, Commands};
-use netmon::dns::{self, DnsEngine};
-use netmon::ping::PingEngine;
-use netmon::tui;
-use netmon::watch::PacketWatcher;
+use pingenty::cli::{self, Cli, Commands};
+use pingenty::dns::{self, DnsEngine};
+use pingenty::ping::PingEngine;
+use pingenty::tui;
+use pingenty::watch::PacketWatcher;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -163,7 +163,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
             // Captura não é pré-requisito: sem permissão/interface, ping e DNS
             // seguem ao vivo e o painel de tráfego mostra o motivo.
-            let (metrics, capture) = netmon::watch::setup_capture(interface);
+            let (metrics, capture) = pingenty::watch::setup_capture(interface);
             eprintln!(">> Dashboard: ping + DNS ao vivo.");
             if let Some(w) = capture.warning.as_deref() {
                 eprintln!(">> {w}");

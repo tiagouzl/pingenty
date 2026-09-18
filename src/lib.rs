@@ -1,4 +1,4 @@
-//! Netmon — monitor de rede assíncrono.
+//! Pingenty — monitor de rede assíncrono.
 //!
 //! Os módulos são expostos como biblioteca para que testes de integração e
 //! benchmarks possam usar o mesmo código que o binário executa (o binário em

@@ -20,9 +20,9 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 
     let header_text = match state.capture.interface.as_deref() {
         Some(iface) => {
-            format!(" NETMON :: Monitor de Rede Assíncrono | Interface: [{iface}] | Tick: 250ms ")
+            format!(" Pingenty :: Monitor de Rede Assíncrono | Interface: [{iface}] | Tick: 250ms ")
         }
-        None => " NETMON :: Monitor de Rede Assíncrono | Ping + DNS ao vivo ".to_string(),
+        None => " Pingenty :: Monitor de Rede Assíncrono | Ping + DNS ao vivo ".to_string(),
     };
     let header = Paragraph::new(header_text)
         .style(
@@ -297,7 +297,7 @@ mod tests {
     fn header_e_footer_mostram_contexto() {
         let mut state = state_with_hosts(&["1.1.1.1"]);
         let text = screen_text(&mut state, 100, 30);
-        assert!(text.contains("NETMON"));
+        assert!(text.contains("Pingenty"));
         assert!(text.contains("Interface: [eth-test]"));
         assert!(text.contains("Pressione 'q'"));
     }
@@ -428,7 +428,7 @@ mod tests {
         );
         let text = screen_text(&mut state, 100, 30);
         assert!(text.contains("Fluxos Ativos (5-Tuple)"));
-        assert!(text.contains("NETMON"));
+        assert!(text.contains("Pingenty"));
         drop(guard);
     }
 

@@ -9,7 +9,7 @@ use tokio::time::sleep;
 static SEQ: AtomicU16 = AtomicU16::new(1);
 
 /// Identificador ICMP único por processo (pid XOR bits do relógio no primeiro
-/// uso). Com o pid puro, duas instâncias do netmon na mesma máquina usariam o
+/// uso). Com o pid puro, duas instâncias do pingenty na mesma máquina usariam o
 /// mesmo ident e uma aceitaria o Echo Reply da outra.
 fn icmp_ident() -> u16 {
     static IDENT: OnceLock<u16> = OnceLock::new();

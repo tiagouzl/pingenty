@@ -1,4 +1,4 @@
-# Netmon — Network Monitor Assíncrono em Rust
+# Pingenty — Network Monitor Assíncrono em Rust
 
 ![Dashboard](demo.gif)
 
@@ -18,7 +18,7 @@ protocolo e por conexão (5-tuple), com dashboard TUI ao vivo.
 # opção 1: liberar ICMP sem privilégio para todos os grupos
 sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 # opção 2: dar a capability só ao binário (recomendado)
-sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
+sudo setcap cap_net_raw,cap_net_admin=eip target/release/pingenty
 ```
 
 - **ICMPv6 implementado** (Echo Request 128 / Reply 129), incluindo checagem de
@@ -28,10 +28,10 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
   escolhido pela stack no envio, então calculá-lo no userspace seria chute.
 - **IPv6 link-local (`fe80::/10`)**: zona explícita (`fe80::1%wlan0`) vence
   quando a interface existe; zona inexistente passa intocado (erro claro, nunca
-  chute silencioso); sem zona, o netmon usa a primeira interface não-loopback
+  chute silencioso); sem zona, o pingenty usa a primeira interface não-loopback
   com endereço link-local. Sem candidata, segue o caminho normal.
 - **Ident ICMP único por processo** (pid XOR bits do relógio), para que duas
-  instâncias do netmon na mesma máquina não aceitem o Echo Reply uma da outra.
+  instâncias do pingenty na mesma máquina não aceitem o Echo Reply uma da outra.
 - **Lock global no mapa de flows** (`watch.rs`) — medido, não chutado (ver
   seção Benchmark abaixo). Contadores por protocolo são atômicos (sem lock), mas
   o `HashMap` de 5-tuples usa um `RwLock` global. Num teste de contenção com
@@ -49,7 +49,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
   captura estiver escrevendo, o tick pula a tabela em vez de travar o executor.
 - **Sem números de throughput inventados para a captura real.** O benchmark
   mede o caminho de agregação em userspace (sem NIC e sem parse do `pnet`).
-  Para medir de verdade, ponta a ponta: `iperf3` + `netmon watch` lado a lado
+  Para medir de verdade, ponta a ponta: `iperf3` + `pingenty watch` lado a lado
   com `tcpdump -i <iface> -q -n`, comparando pps, RSS (`/usr/bin/time -v`) e CPU.
 
 ## Benchmark (`cargo bench`)
@@ -88,8 +88,8 @@ Leitura honesta:
 
 ```bash
 cargo build --release
-sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
-./target/release/netmon dashboard
+sudo setcap cap_net_raw,cap_net_admin=eip target/release/pingenty
+./target/release/pingenty dashboard
 ```
 
 > Em ambientes sem root e sem `CAP_NET_RAW` (containers com
@@ -100,14 +100,14 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
 ## Uso
 
 ```bash
-netmon dashboard --ping-hosts "1.1.1.1,8.8.8.8" --dns-domains "github.com,cloudflare.com"
-netmon dashboard --ping-interval 500 --ping-timeout 1000 --tcp-port 443
-netmon dashboard --dns-interval 5000 --dns-timeout 1500
-netmon ping 1.1.1.1 8.8.8.8 --interval 1000
-netmon ping 2606:4700:4700::1111                            # ICMPv6
-netmon ping fe80::1%wlan0                                   # link-local com zona
-netmon dns cloudflare.com archlinux.org --record-type a
-netmon watch --interface eth0 --interval 1000
+target/release/pingenty dashboard --ping-hosts "1.1.1.1,8.8.8.8" --dns-domains "github.com,cloudflare.com"
+target/release/pingenty dashboard --ping-interval 500 --ping-timeout 1000 --tcp-port 443
+target/release/pingenty dashboard --dns-interval 5000 --dns-timeout 1500
+target/release/pingenty ping 1.1.1.1 8.8.8.8 --interval 1000
+target/release/pingenty ping 2606:4700:4700::1111                            # ICMPv6
+target/release/pingenty ping fe80::1%wlan0                                   # link-local com zona
+target/release/pingenty dns cloudflare.com archlinux.org --record-type a
+target/release/pingenty watch --interface eth0 --interval 1000
 # validar lado a lado: sudo tcpdump -i eth0 -q -n
 ```
 

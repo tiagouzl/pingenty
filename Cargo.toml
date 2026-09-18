@@ -1,5 +1,5 @@
 [package]
-name = "netmon"
+name = "pingenty"
 version = "0.1.0"
 edition = "2021"
 description = "Monitor de rede assíncrono com TUI em Rust"

@@ -280,7 +280,7 @@ impl PacketWatcher {
         };
 
         std::thread::Builder::new()
-            .name("netmon-pcap".to_string())
+            .name("pingenty-pcap".to_string())
             .spawn(move || loop {
                 match rx.next() {
                     Ok(frame) => Self::process_frame(frame, &metrics),
