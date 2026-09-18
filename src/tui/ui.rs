@@ -228,3 +228,195 @@ fn render_watch_panel(frame: &mut Frame, state: &AppState, area: Rect) {
     );
     frame.render_widget(table, chunks[1]);
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::RecordTypeCli;
+    use crate::dns::{DnsQueryResult, DnsStatus};
+    use crate::ping::PingSample;
+    use crate::watch::{FiveTuple, FlowStat, TrafficMetrics};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Renderiza num backend de teste e devolve o conteúdo linha a linha.
+    /// `Buffer::content` é público e as chunks de `width` são exatamente as
+    /// linhas da tela — evita depender de igualdade byte a byte do buffer.
+    fn render_lines(state: &mut AppState, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("terminal de teste");
+        terminal.draw(|f| render(f, state)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn screen_text(state: &mut AppState, width: u16, height: u16) -> String {
+        render_lines(state, width, height).join("\n")
+    }
+
+    fn state_with_hosts(hosts: &[&str]) -> AppState {
+        AppState::new(
+            hosts.iter().map(|h| h.to_string()).collect(),
+            "eth-test".into(),
+            Arc::new(TrafficMetrics::default()),
+        )
+    }
+
+    fn sample(host: &str, rtt_ms: Option<u64>) -> PingSample {
+        PingSample {
+            host: host.to_string(),
+            rtt: rtt_ms.map(Duration::from_millis),
+            is_fallback: rtt_ms.is_none(),
+            error: rtt_ms.is_none().then(|| "timeout".to_string()),
+        }
+    }
+
+    fn dns_result(domain: &str, status: DnsStatus) -> DnsQueryResult {
+        DnsQueryResult {
+            domain: domain.to_string(),
+            record_type: RecordTypeCli::A,
+            status,
+        }
+    }
+
+    #[test]
+    fn header_e_footer_mostram_contexto() {
+        let mut state = state_with_hosts(&["1.1.1.1"]);
+        let text = screen_text(&mut state, 100, 30);
+        assert!(text.contains("NETMON"));
+        assert!(text.contains("Interface: [eth-test]"));
+        assert!(text.contains("Pressione 'q'"));
+    }
+
+    #[test]
+    fn painel_ping_mostra_rtt_perda_e_timeout() {
+        let mut state = state_with_hosts(&["host-a", "host-b"]);
+        state.on_ping_sample(sample("host-a", Some(42)));
+        state.on_ping_sample(sample("host-b", None));
+        let text = screen_text(&mut state, 100, 30);
+        assert!(text.contains("Latência ICMP/TCP"));
+        assert!(text.contains("host-a => Atual: 42 ms | Perda: 0.0%"));
+        assert!(text.contains("host-b => Atual: TIMEOUT | Perda: 100.0%"));
+    }
+
+    #[test]
+    fn painel_dns_mostra_ok_nxdomain_e_erro() {
+        let mut state = state_with_hosts(&["1.1.1.1"]);
+        state.on_dns_result(dns_result(
+            "ok.example",
+            DnsStatus::Success {
+                records: vec!["1.2.3.4".into()],
+                latency: Duration::from_millis(12),
+            },
+        ));
+        state.on_dns_result(dns_result(
+            "nx.example",
+            DnsStatus::NotFound {
+                latency: Duration::from_millis(3),
+            },
+        ));
+        state.on_dns_result(dns_result(
+            "err.example",
+            DnsStatus::Error {
+                message: "sem rota".into(),
+                latency: Duration::from_millis(500),
+            },
+        ));
+        let text = screen_text(&mut state, 120, 30);
+        assert!(text.contains("Monitor DNS"));
+        assert!(text.contains("ok.example"));
+        assert!(text.contains("OK (12.0ms)"));
+        assert!(text.contains("nx.example"));
+        assert!(text.contains("NXDOMAIN (3.0ms)"));
+        assert!(text.contains("err.example"));
+        assert!(text.contains("ERRO (500.0ms)"));
+    }
+
+    #[test]
+    fn painel_watch_mostra_protocolos_e_fluxos() {
+        // Métricas montadas direto: o painel só lê contadores atômicos e o mapa
+        // de 5-tuples, então não depende do caminho de captura.
+        let metrics = Arc::new(TrafficMetrics::default());
+        metrics
+            .global_protocols
+            .tcp_packets
+            .store(1, Ordering::Relaxed);
+        metrics
+            .global_protocols
+            .tcp_bytes
+            .store(2048, Ordering::Relaxed);
+        metrics.flows.write().expect("write").insert(
+            FiveTuple {
+                src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                src_port: 0,
+                dst_port: 0,
+                protocol: "TCP",
+            },
+            FlowStat {
+                packet_count: 1,
+                byte_count: 2048,
+                last_seen: Some(Instant::now()),
+            },
+        );
+        let mut state = AppState::new(vec!["1.1.1.1".into()], "eth-test".into(), metrics);
+        let text = screen_text(&mut state, 200, 30);
+        assert!(text.contains("Protocolos Agregados"));
+        assert!(text.contains("TCP: 1 pkts (2 KB)"));
+        assert!(text.contains("UDP: 0 pkts (0 KB)"));
+        assert!(text.contains("Fluxos Ativos (5-Tuple)"));
+        assert!(text.contains("10.0.0.1:0"));
+        assert!(text.contains("10.0.0.2:0"));
+        assert!(text.contains("2.00 KB"));
+    }
+
+    #[test]
+    fn mais_hosts_que_espaco_nao_causa_panic() {
+        // 30 hosts: em terminal pequeno o guard de layout precisa cortar em vez
+        // de estourar o índice das constraints.
+        let hosts: Vec<String> = (0..30).map(|i| format!("h{i}")).collect();
+        let mut state = AppState::new(
+            hosts,
+            "eth-test".into(),
+            Arc::new(TrafficMetrics::default()),
+        );
+
+        let apertado = render_lines(&mut state, 80, 12);
+        assert_eq!(apertado.len(), 12, "buffer deve ter a altura da tela");
+        assert!(apertado.join("\n").contains("Latência ICMP/TCP"));
+
+        let folgado = render_lines(&mut state, 80, 24);
+        let texto = folgado.join("\n");
+        let desenhados = texto.matches("=> Atual:").count();
+        assert!(desenhados > 0, "algum host precisa aparecer");
+        assert!(
+            desenhados < 30,
+            "o excedente deve ser cortado, não estourado (desenhados: {desenhados})"
+        );
+    }
+
+    #[test]
+    fn lock_de_fluxos_ocupado_nao_trava_renderizacao() {
+        // A thread de captura escrevendo (write lock preso) não pode travar o
+        // draw: a tabela é pulada e o resto do painel continua desenhado.
+        let metrics = Arc::new(TrafficMetrics::default());
+        let guard = metrics.flows.write().expect("write lock");
+        let mut state = AppState::new(
+            vec!["1.1.1.1".into()],
+            "eth-test".into(),
+            Arc::clone(&metrics),
+        );
+        let text = screen_text(&mut state, 100, 30);
+        assert!(text.contains("Fluxos Ativos (5-Tuple)"));
+        assert!(text.contains("NETMON"));
+        drop(guard);
+    }
+}

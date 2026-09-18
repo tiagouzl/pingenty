@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  qualidade:
+    name: fmt + clippy + testes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain estável (rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache de build
+        uses: Swatinem/rust-cache@v2
+
+      # pnet_datalink no Linux usa AF_PACKET nativo (sem libpcap), então não há
+      # dependência de sistema para instalar.
+      - name: Formatação
+        run: cargo fmt --all -- --check
+
+      - name: Lint (warning vira erro)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Testes
+        run: cargo test --locked
+
+      - name: Build de release
+        run: cargo build --release --locked
