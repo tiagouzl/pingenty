@@ -7,25 +7,39 @@ use hickory_resolver::TokioAsyncResolver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Resultado classificado de uma consulta: sucesso, NXDOMAIN (domínio não
+/// existe) ou erro (inclui timeout e NODATA — domínio existe, sem o registro).
 #[derive(Debug, Clone)]
 pub enum DnsStatus {
+    /// Resposta com ao menos um registro.
     Success {
+        /// Registros em texto.
         records: Vec<String>,
+        /// Tempo da consulta.
         latency: Duration,
     },
+    /// NXDOMAIN: o domínio não existe.
     NotFound {
+        /// Tempo da consulta.
         latency: Duration,
     },
+    /// Falha (timeout, NODATA, erro de rede).
     Error {
+        /// Causa em texto.
         message: String,
+        /// Tempo até a falha.
         latency: Duration,
     },
 }
 
+/// Uma consulta DNS com domínio, tipo pedido e resultado classificado.
 #[derive(Debug, Clone)]
 pub struct DnsQueryResult {
+    /// Domínio consultado.
     pub domain: String,
+    /// Tipo de registro pedido.
     pub record_type: RecordTypeCli,
+    /// Resultado classificado.
     pub status: DnsStatus,
 }
 
@@ -42,12 +56,14 @@ fn is_nxdomain(err: &ResolveError) -> bool {
     )
 }
 
+/// Resolver Hickory-DNS com timeout e 2 tentativas por consulta.
 pub struct DnsEngine {
     resolver: TokioAsyncResolver,
     timeout: Duration,
 }
 
 impl DnsEngine {
+    /// `timeout_ms` por tentativa (até 2 tentativas).
     pub fn new(timeout_ms: u64) -> Result<Self, anyhow::Error> {
         let mut opts = ResolverOpts::default();
         opts.timeout = Duration::from_millis(timeout_ms);
@@ -59,6 +75,8 @@ impl DnsEngine {
         })
     }
 
+    /// Uma consulta com medição de RTT. Nunca falha com erro: tudo vira
+    /// [`DnsQueryResult`] classificado (NXDOMAIN ≠ erro).
     pub async fn resolve(&self, domain: &str, record_type: RecordTypeCli) -> DnsQueryResult {
         let target_type = match record_type {
             RecordTypeCli::A => RecordType::A,
@@ -111,6 +129,8 @@ impl DnsEngine {
         }
     }
 
+    /// Loop infinito: resolve cada domínio a cada `interval` e envia no canal.
+    /// Termina quando o receptor é descartado.
     pub async fn run_continuous(
         self: Arc<Self>,
         domains: Vec<String>,

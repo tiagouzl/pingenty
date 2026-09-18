@@ -4,16 +4,24 @@ use crate::watch::{CaptureStatus, TrafficMetrics};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+/// Série de um host no painel de ping: sparkline + contadores de perda.
 pub struct PingHistory {
+    /// Host monitorado.
     pub host: String,
+    /// Últimas 40 amostras em ms (`0` = timeout; alimenta o sparkline).
     pub history: VecDeque<u64>,
+    /// Último RTT (`None` = timeout).
     pub last_rtt: Option<u64>,
+    /// Amostras enviadas.
     pub transmitted: u64,
+    /// Respostas recebidas.
     pub received: u64,
+    /// `true` enquanto os limiares de alerta estouram.
     pub alerting: bool,
 }
 
 impl PingHistory {
+    /// Perda em % sobre as amostras deste host.
     pub fn loss_pct(&self) -> f64 {
         if self.transmitted == 0 {
             0.0
@@ -33,22 +41,31 @@ impl PingHistory {
     }
 }
 
-/// Transição de alerta de um host (edge-triggered: só na mudança).
+/// Transição de alerta de um host (só na entrada/saída, nunca por tick).
 pub struct AlertEvent {
+    /// Host que mudou de estado.
     pub host: String,
+    /// `true` = entrou em alerta; `false` = voltou ao normal.
     pub entered: bool,
 }
 
+/// Estado mutável do dashboard: trackers de ping, últimos DNS, métricas da
+/// captura e limiares de alerta.
 pub struct AppState {
+    /// Um tracker por host do dashboard.
     pub ping_trackers: Vec<PingHistory>,
+    /// Últimos 20 resultados DNS.
     pub dns_results: VecDeque<DnsQueryResult>,
+    /// Métricas da captura (escritas pela thread, lidas sem lock).
     pub watcher_metrics: Arc<TrafficMetrics>,
+    /// Status da captura (ativa ou motivo do downgrade).
     pub capture: CaptureStatus,
     alert_loss_pct: f64,
     alert_rtt_ms: u64,
 }
 
 impl AppState {
+    /// Trackers zerados para cada host (sparkline começa em 40 zeros).
     pub fn new(hosts: Vec<String>, metrics: Arc<TrafficMetrics>, capture: CaptureStatus) -> Self {
         let ping_trackers = hosts
             .into_iter()
@@ -77,6 +94,7 @@ impl AppState {
         self.alert_rtt_ms = rtt_ms;
     }
 
+    /// Hosts atualmente em alerta.
     pub fn alert_count(&self) -> usize {
         self.ping_trackers.iter().filter(|p| p.alerting).count()
     }
@@ -114,6 +132,7 @@ impl AppState {
         })
     }
 
+    /// Guarda resultado DNS (máx. 20, descarta o mais antigo).
     pub fn on_dns_result(&mut self, result: DnsQueryResult) {
         if self.dns_results.len() >= 20 {
             self.dns_results.pop_front();

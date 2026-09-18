@@ -1,4 +1,6 @@
+/// Estado mutável do dashboard (trackers, DNS, métricas, alertas).
 pub mod app;
+/// Renderização do dashboard (ratatui).
 pub mod ui;
 
 use app::AppState;
@@ -11,9 +13,11 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
 
+/// Runner da TUI: drena os canais, desenha a 250 ms e sai em `q`/Ctrl+C.
 pub struct TuiRunner;
 
 impl TuiRunner {
+    /// Roda o dashboard até o usuário sair. Alertas de ping vão para stderr.
     pub async fn run(
         mut state: AppState,
         mut ping_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ping::PingSample>,

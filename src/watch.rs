@@ -12,19 +12,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
+/// Chave de agregação de um fluxo: 5-tuple clássico (origem, destino, proto).
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct FiveTuple {
+    /// IP de origem.
     pub src_ip: IpAddr,
+    /// IP de destino.
     pub dst_ip: IpAddr,
+    /// Porta de origem (`0` quando o protocolo não tem portas).
     pub src_port: u16,
+    /// Porta de destino (`0` quando o protocolo não tem portas).
     pub dst_port: u16,
+    /// `"TCP"`, `"UDP"`, `"ICMP"` ou outro (cai em `OUTR`).
     pub protocol: &'static str,
 }
 
+/// Contadores acumulados de um fluxo.
 #[derive(Debug, Clone, Default)]
 pub struct FlowStat {
+    /// Pacotes vistos no fluxo.
     pub packet_count: u64,
+    /// Bytes vistos no fluxo.
     pub byte_count: u64,
+    /// Último pacote (para varredura de fluxos mortos).
     pub last_seen: Option<Instant>,
 }
 
@@ -33,18 +43,28 @@ pub struct FlowStat {
 // ainda é global (ver README) — sharding/DashMap fica para quando houver
 // benchmark real mostrando contenção.
 #[derive(Debug, Default)]
+/// Contadores por protocolo em atômicos (leitura nunca bloqueia a captura).
 pub struct ProtocolCounters {
+    /// Bytes TCP acumulados.
     pub tcp_bytes: AtomicU64,
+    /// Pacotes TCP acumulados.
     pub tcp_packets: AtomicU64,
+    /// Bytes UDP acumulados.
     pub udp_bytes: AtomicU64,
+    /// Pacotes UDP acumulados.
     pub udp_packets: AtomicU64,
+    /// Bytes ICMP acumulados.
     pub icmp_bytes: AtomicU64,
+    /// Pacotes ICMP acumulados.
     pub icmp_packets: AtomicU64,
+    /// Bytes de outros protocolos acumulados.
     pub other_bytes: AtomicU64,
+    /// Pacotes de outros protocolos acumulados.
     pub other_packets: AtomicU64,
 }
 
 impl ProtocolCounters {
+    /// Leitura consistente (Relaxed: basta para exibição).
     pub fn snapshot(&self) -> ProtocolSnapshot {
         ProtocolSnapshot {
             tcp_bytes: self.tcp_bytes.load(Ordering::Relaxed),
@@ -59,15 +79,24 @@ impl ProtocolCounters {
     }
 }
 
+/// Foto imutável dos contadores para exibição (ver [`ProtocolCounters`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProtocolSnapshot {
+    /// Bytes TCP.
     pub tcp_bytes: u64,
+    /// Pacotes TCP.
     pub tcp_packets: u64,
+    /// Bytes UDP.
     pub udp_bytes: u64,
+    /// Pacotes UDP.
     pub udp_packets: u64,
+    /// Bytes ICMP.
     pub icmp_bytes: u64,
+    /// Pacotes ICMP.
     pub icmp_packets: u64,
+    /// Bytes de outros protocolos.
     pub other_bytes: u64,
+    /// Pacotes de outros protocolos.
     pub other_packets: u64,
 }
 
@@ -78,9 +107,14 @@ const FLOW_IDLE_SECS: u64 = 300;
 /// Intervalo mínimo entre varreduras periódicas de fluxos mortos.
 const FLOW_SWEEP_INTERVAL_SECS: u64 = 60;
 
+/// Métricas compartilhadas entre a thread de captura e a TUI: contadores
+/// atômicos por protocolo + mapa de fluxos com varredura de mortos por tempo
+/// (1x/min, 300 s inativo) e por tamanho (10 mil entradas).
 #[derive(Debug, Default)]
 pub struct TrafficMetrics {
+    /// Contadores por protocolo (sem lock).
     pub global_protocols: ProtocolCounters,
+    /// Fluxos por 5-tuple (lei com `try_read` na TUI para nunca travar).
     pub flows: RwLock<HashMap<FiveTuple, FlowStat>>,
     /// Instante da última varredura, em segundos desde `epoch`.
     last_sweep_secs: AtomicU64,
@@ -172,6 +206,7 @@ fn strip_vlan_tags(ethertype: EtherType, mut payload: &[u8]) -> (EtherType, &[u8
     (ethertype, payload)
 }
 
+/// Resultado da tentativa de captura: ativa ou desligada com motivo.
 #[derive(Debug, Clone, Default)]
 pub struct CaptureStatus {
     /// Nome da interface em captura, ou `None` quando a captura foi desligada.
@@ -181,6 +216,7 @@ pub struct CaptureStatus {
 }
 
 impl CaptureStatus {
+    /// Captura ligada nesta interface.
     pub fn active(interface_name: String) -> Self {
         Self {
             interface: Some(interface_name),
@@ -188,6 +224,7 @@ impl CaptureStatus {
         }
     }
 
+    /// Captura desligada com motivo exibível na TUI (downgrade gracioso).
     pub fn disabled(reason: impl Into<String>) -> Self {
         Self {
             interface: None,
@@ -223,12 +260,17 @@ pub fn setup_capture(interface: Option<String>) -> (Arc<TrafficMetrics>, Capture
     }
 }
 
+/// Captura passiva numa interface: resolve o nome (ou escolhe a padrão) e
+/// mantém as métricas compartilhadas com a TUI.
 pub struct PacketWatcher {
+    /// Nome da interface em captura.
     pub interface_name: String,
+    /// Métricas compartilhadas (thread de captura escreve, TUI lê).
     pub metrics: Arc<TrafficMetrics>,
 }
 
 impl PacketWatcher {
+    /// Localiza a interface (`None` = primeira ativa não-loopback com IPs).
     pub fn new(
         interface_name_opt: Option<String>,
     ) -> Result<(Self, NetworkInterface), anyhow::Error> {
@@ -254,6 +296,8 @@ impl PacketWatcher {
         ))
     }
 
+    /// Sobe a thread de captura (bloqueante em `datalink::channel`). Uma por
+    /// interface; exige `CAP_NET_RAW`.
     pub fn start_capture_thread(
         iface: NetworkInterface,
         metrics: Arc<TrafficMetrics>,

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// Interface de linha de comando do Pingenty.
 #[derive(Parser, Debug)]
 #[command(
     name = "pingenty",
@@ -7,10 +8,12 @@ use clap::{Parser, Subcommand, ValueEnum};
     about = "Monitor de rede assíncrono em tempo real com TUI"
 )]
 pub struct Cli {
+    /// Subcomando a executar.
     #[command(subcommand)]
     pub command: Commands,
 }
 
+/// Subcomandos do Pingenty (cada um também existe dentro do dashboard).
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Medição de latência ICMP/ICMPv6 com fallback transparente para TCP
@@ -110,16 +113,22 @@ pub enum Commands {
     },
 }
 
+/// Tipo de registro DNS pedido no `dns` (só leitura pontual; o dashboard usa A).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum RecordTypeCli {
+    /// Registro A (IPv4).
     #[value(name = "a")]
     A,
+    /// Registro AAAA (IPv6).
     #[value(name = "aaaa")]
     Aaaa,
+    /// Registro CNAME (apelido).
     #[value(name = "cname")]
     Cname,
+    /// Registro MX (troca de e-mail).
     #[value(name = "mx")]
     Mx,
+    /// Registro TXT (texto livre).
     #[value(name = "txt")]
     Txt,
 }

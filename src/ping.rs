@@ -22,24 +22,36 @@ fn icmp_ident() -> u16 {
     })
 }
 
+/// Uma medição de latência: `rtt` é `None` em timeout/erro (ver `error`).
 #[derive(Debug, Clone)]
 pub struct PingSample {
+    /// Host original pedido (inclui a zona `%iface` se houver).
     pub host: String,
+    /// RTT medido; `None` quando o pacote não voltou.
     pub rtt: Option<Duration>,
+    /// `true` quando medido via TCP connect (ICMP indisponível).
     pub is_fallback: bool,
+    /// Causa quando `rtt` é `None` (`"TIMEOUT"`, erro de rede ou de DNS).
     pub error: Option<String>,
 }
 
+/// Acumulador de estatísticas de uma sequência de pings.
 #[derive(Debug, Clone, Default)]
 pub struct PingStats {
+    /// Pacotes enviados.
     pub transmitted: u64,
+    /// Respostas válidas recebidas.
     pub received: u64,
+    /// Menor RTT observado.
     pub min_rtt: Option<Duration>,
+    /// Maior RTT observado.
     pub max_rtt: Option<Duration>,
+    /// Soma dos RTTs (média sem guardar histórico).
     pub sum_rtt: Duration,
 }
 
 impl PingStats {
+    /// Registra uma amostra (`None` = perda).
     pub fn record(&mut self, rtt_opt: Option<Duration>) {
         self.transmitted += 1;
         if let Some(rtt) = rtt_opt {
@@ -50,6 +62,7 @@ impl PingStats {
         }
     }
 
+    /// Perda em % (0–100); 0,0 sem amostras.
     pub fn loss_rate(&self) -> f64 {
         if self.transmitted == 0 {
             return 0.0;
@@ -57,6 +70,7 @@ impl PingStats {
         ((self.transmitted - self.received) as f64 / self.transmitted as f64) * 100.0
     }
 
+    /// Média sobre as respostas recebidas; `None` sem nenhuma resposta.
     pub fn avg_rtt(&self) -> Option<Duration> {
         if self.received == 0 {
             None
@@ -160,6 +174,8 @@ fn is_valid_echo_reply_v6(buf: &[u8], n: usize, ident: u16, seq: u16) -> bool {
     false
 }
 
+/// Motor de ping: ICMP/ICMPv6 (DGRAM → RAW) com fallback para TCP connect,
+/// sempre sinalizado em [`PingSample::is_fallback`].
 pub struct PingEngine {
     interval: Duration,
     timeout: Duration,
@@ -167,6 +183,7 @@ pub struct PingEngine {
 }
 
 impl PingEngine {
+    /// Intervalos em ms; `tcp_port` é a porta do fallback TCP connect.
     pub fn new(interval_ms: u64, timeout_ms: u64, tcp_port: u16) -> Self {
         Self {
             interval: Duration::from_millis(interval_ms),
@@ -175,6 +192,8 @@ impl PingEngine {
         }
     }
 
+    /// Uma medição contra `target` (aceita `fe80::1%wlan0`). Nunca falha com
+    /// erro: tudo vira [`PingSample`] com `rtt: None` e `error` preenchido.
     pub async fn ping_once(&self, target: &str) -> PingSample {
         // `fe80::1%wlan0` precisa ser separado antes da resolução: o `%` não é
         // parte do endereço e o resolver não entende zona.
@@ -361,6 +380,8 @@ impl PingEngine {
         .await?
     }
 
+    /// Loop infinito: mede, acumula [`PingStats`] e chama `on_sample` a cada
+    /// intervalo. O callback é síncrono de propósito (não pode `.await`).
     pub async fn run_continuous<F>(self: Arc<Self>, host: String, mut on_sample: F)
     where
         F: FnMut(PingSample, &PingStats) + Send + 'static,

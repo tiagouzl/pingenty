@@ -10,8 +10,10 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Cabeçalho do CSV de ping.
 pub const CSV_HEADER: &str = "timestamp,host,rtt_ms,loss_pct,modo";
 
+/// Segundos Unix atuais (relógio de parede; `0` se indisponível).
 pub fn unix_secs_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -46,6 +48,7 @@ fn modo(fallback: bool) -> &'static str {
     }
 }
 
+/// Uma linha do CSV de ping (`rtt` vazio em timeout).
 pub fn csv_row(t: u64, sample: &PingSample, loss_pct: f64) -> String {
     format!(
         "{t},{},{},{loss_pct:.1},{}",
@@ -55,6 +58,7 @@ pub fn csv_row(t: u64, sample: &PingSample, loss_pct: f64) -> String {
     )
 }
 
+/// Um evento de ping em NDJSON (`rtt_ms: null` em timeout).
 pub fn ndjson_ping(t: u64, sample: &PingSample, loss_pct: f64) -> String {
     let rtt = sample.rtt.map_or("null".into(), |d| {
         format!("{:.3}", d.as_secs_f64() * 1000.0)
@@ -66,6 +70,7 @@ pub fn ndjson_ping(t: u64, sample: &PingSample, loss_pct: f64) -> String {
     )
 }
 
+/// Um resultado DNS em NDJSON (`status`: `ok`/`nxdomain`/`erro`).
 pub fn ndjson_dns(t: u64, res: &DnsQueryResult) -> String {
     let (status, latency) = match &res.status {
         DnsStatus::Success { latency, .. } => ("ok", latency),
@@ -79,6 +84,7 @@ pub fn ndjson_dns(t: u64, res: &DnsQueryResult) -> String {
     )
 }
 
+/// Anexa amostras do dashboard em CSV e/ou NDJSON (flush por amostra).
 pub struct Exporter {
     csv: Option<BufWriter<std::fs::File>>,
     json: Option<BufWriter<std::fs::File>>,
@@ -107,6 +113,8 @@ impl Exporter {
         Ok(Self { csv, json })
     }
 
+    /// Registra uma amostra de ping nos arquivos configurados (ignora os
+    /// ausentes). Erros de I/O são descartados: export nunca quebra o dashboard.
     pub fn ping(&mut self, sample: &PingSample, loss_pct: f64) {
         let t = unix_secs_now();
         if let Some(f) = self.csv.as_mut() {
@@ -119,6 +127,7 @@ impl Exporter {
         }
     }
 
+    /// Registra um resultado DNS no NDJSON (CSV é só ping).
     pub fn dns(&mut self, res: &DnsQueryResult) {
         if let Some(f) = self.json.as_mut() {
             let _ = writeln!(f, "{}", ndjson_dns(unix_secs_now(), res));

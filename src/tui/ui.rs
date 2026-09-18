@@ -8,6 +8,8 @@ use ratatui::{
     Frame,
 };
 
+/// Desenha header, painéis (ping/DNS/tráfego) e rodapé. Nunca dá panic em
+/// terminal pequeno: hosts além do espaço são cortados (primeiros N).
 pub fn render(frame: &mut Frame, state: &mut AppState) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
