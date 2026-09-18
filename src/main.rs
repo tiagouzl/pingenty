@@ -149,6 +149,8 @@ async fn main() -> Result<(), anyhow::Error> {
             dns_timeout,
             dns_interval,
             tcp_port,
+            alert_loss,
+            alert_rtt,
         } => {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
@@ -200,7 +202,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     .await;
             });
 
-            let state = tui::app::AppState::new(p_hosts, metrics, capture);
+            let mut state = tui::app::AppState::new(p_hosts, metrics, capture);
+            state.set_alert_thresholds(alert_loss, alert_rtt);
             tui::TuiRunner::run(state, ping_rx, dns_rx).await?;
         }
     }

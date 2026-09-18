@@ -29,7 +29,13 @@ impl TuiRunner {
 
         loop {
             while let Ok(sample) = ping_rx.try_recv() {
-                state.on_ping_sample(sample);
+                if let Some(ev) = state.on_ping_sample(sample) {
+                    eprintln!(
+                        ">> ALERTA {}: {}",
+                        if ev.entered { "início" } else { "fim" },
+                        ev.host
+                    );
+                }
             }
             while let Ok(sample) = dns_rx.try_recv() {
                 state.on_dns_result(sample);

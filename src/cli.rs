@@ -91,6 +91,14 @@ pub enum Commands {
         /// Porta TCP para o fallback do ping quando o ICMP é inviável
         #[arg(long, default_value_t = 80)]
         tcp_port: u16,
+
+        /// % de perda que dispara alerta no dashboard (0 desliga)
+        #[arg(long, default_value_t = 10.0)]
+        alert_loss: f64,
+
+        /// RTT médio em ms que dispara alerta no dashboard (0 desliga)
+        #[arg(long, default_value_t = 200)]
+        alert_rtt: u64,
     },
 }
 
@@ -147,6 +155,43 @@ mod tests {
                 assert_eq!(dns_timeout, 900);
                 assert_eq!(dns_interval, 1200);
                 assert_eq!(tcp_port, 443);
+            }
+            _ => panic!("deveria ser dashboard"),
+        }
+    }
+
+    #[test]
+    fn dashboard_aceita_limiares_de_alerta_e_zero_desliga() {
+        let cli = Cli::try_parse_from([
+            "pingenty",
+            "dashboard",
+            "--alert-loss",
+            "5.5",
+            "--alert-rtt",
+            "300",
+        ])
+        .expect("parse dos limiares");
+        match cli.command {
+            Commands::Dashboard {
+                alert_loss,
+                alert_rtt,
+                ..
+            } => {
+                assert_eq!(alert_loss, 5.5);
+                assert_eq!(alert_rtt, 300);
+            }
+            _ => panic!("deveria ser dashboard"),
+        }
+        // Defaults: alerta ligado (10% / 200 ms).
+        let cli = Cli::try_parse_from(["pingenty", "dashboard"]).expect("defaults");
+        match cli.command {
+            Commands::Dashboard {
+                alert_loss,
+                alert_rtt,
+                ..
+            } => {
+                assert_eq!(alert_loss, 10.0);
+                assert_eq!(alert_rtt, 200);
             }
             _ => panic!("deveria ser dashboard"),
         }

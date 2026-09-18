@@ -47,9 +47,13 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     render_dns_panel(frame, state, left_chunks[1]);
     render_watch_panel(frame, state, body_chunks[1]);
 
-    let footer =
-        Paragraph::new(" Pressione 'q' ou 'Ctrl+C' para sair | Métricas coletadas em tempo real ")
-            .style(Style::default().fg(Color::DarkGray));
+    let alerts = state.alert_count();
+    let footer_text = if alerts > 0 {
+        format!(" Pressione 'q' ou 'Ctrl+C' para sair | Métricas coletadas em tempo real | Alertas: {alerts} ")
+    } else {
+        " Pressione 'q' ou 'Ctrl+C' para sair | Métricas coletadas em tempo real ".to_string()
+    };
+    let footer = Paragraph::new(footer_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, main_chunks[2]);
 }
 
@@ -75,26 +79,25 @@ fn render_ping_panel(frame: &mut Frame, state: &AppState, area: Rect) {
         if idx >= inner_layout.len() {
             break;
         }
-        let loss = if tracker.transmitted == 0 {
-            0.0
-        } else {
-            ((tracker.transmitted - tracker.received) as f64 / tracker.transmitted as f64) * 100.0
-        };
+        let loss = tracker.loss_pct();
         let rtt_str = tracker
             .last_rtt
             .map_or("TIMEOUT".into(), |v| format!("{v} ms"));
-        let label = format!(
+        let mut label = format!(
             "{} => Atual: {} | Perda: {:.1}%",
             tracker.host, rtt_str, loss
         );
+        let label_style = if tracker.alerting {
+            label.push_str(" [ALERTA]");
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
         let sub_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Length(2)])
             .split(inner_layout[idx]);
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(Color::Yellow)),
-            sub_chunks[0],
-        );
+        frame.render_widget(Paragraph::new(label).style(label_style), sub_chunks[0]);
         let spark_data: Vec<u64> = tracker.history.iter().copied().collect();
         frame.render_widget(
             Sparkline::default()
@@ -311,6 +314,18 @@ mod tests {
         assert!(text.contains("Latência ICMP/TCP"));
         assert!(text.contains("host-a => Atual: 42 ms | Perda: 0.0%"));
         assert!(text.contains("host-b => Atual: TIMEOUT | Perda: 100.0%"));
+    }
+
+    #[test]
+    fn painel_ping_marca_host_em_alerta_e_conta_no_rodape() {
+        let mut state = state_with_hosts(&["host-a", "host-b"]);
+        state.set_alert_thresholds(10.0, 200);
+        state.on_ping_sample(sample("host-a", None));
+        state.on_ping_sample(sample("host-b", Some(42)));
+        let text = screen_text(&mut state, 150, 30);
+        assert!(text.contains("host-a => Atual: TIMEOUT | Perda: 100.0% [ALERTA]"));
+        assert!(!text.contains("host-b => Atual: 42 ms | Perda: 0.0% [ALERTA]"));
+        assert!(text.contains("Alertas: 1"));
     }
 
     #[test]
