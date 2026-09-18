@@ -1,0 +1,21 @@
+[package]
+name = "netmon"
+version = "0.1.0"
+edition = "2021"
+description = "Monitor de rede assíncrono com TUI em Rust"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.36", features = ["full"] }
+ratatui = "0.26"
+crossterm = { version = "0.27", features = ["event-stream"] }
+hickory-resolver = "0.24"
+pnet = "0.34"
+socket2 = { version = "0.5", features = ["all"] }
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1.36", features = ["full"] }
