@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser, Debug)]
 #[command(
     name = "netmon",
-    version = "0.1.0",
+    version,
     about = "Network Monitor assíncrono em tempo real com TUI"
 )]
 pub struct Cli {
@@ -53,8 +53,8 @@ pub enum Commands {
         #[arg(short, long)]
         interface: Option<String>,
 
-        /// Intervalo de impressão estatística em milissegundos
-        #[arg(long, default_value_t = 1000)]
+        /// Intervalo de impressão estatística em milissegundos (mínimo 50)
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(50..))]
         interval: u64,
     },
 

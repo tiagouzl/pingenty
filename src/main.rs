@@ -155,10 +155,12 @@ async fn main() -> Result<(), anyhow::Error> {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
                 .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
                 .collect();
             let d_domains: Vec<String> = dns_domains
                 .split(',')
                 .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
                 .collect();
 
             let (watcher, iface) = PacketWatcher::new(interface)?;

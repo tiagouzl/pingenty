@@ -1,6 +1,7 @@
 use crate::cli::RecordTypeCli;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-use hickory_resolver::error::ResolveErrorKind;
+use hickory_resolver::error::{ResolveError, ResolveErrorKind};
+use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::RecordType;
 use hickory_resolver::TokioAsyncResolver;
 use std::sync::Arc;
@@ -26,6 +27,19 @@ pub struct DnsQueryResult {
     pub domain: String,
     pub record_type: RecordTypeCli,
     pub status: DnsStatus,
+}
+
+/// NXDOMAIN = o domínio não existe (NotFound). NODATA — resposta `NoError` sem
+/// registros do tipo pedido — é outra coisa e não deve ser reportada como
+/// domínio inexistente. Detecção tipada, sem depender do texto do Display.
+fn is_nxdomain(err: &ResolveError) -> bool {
+    matches!(
+        err.kind(),
+        ResolveErrorKind::NoRecordsFound {
+            response_code: ResponseCode::NXDomain,
+            ..
+        }
+    )
 }
 
 pub struct DnsEngine {
@@ -72,9 +86,9 @@ impl DnsEngine {
                     }
                 }
                 Ok(Err(err)) => {
-                    // Detecção tipada via ResolveErrorKind, sem depender do
-                    // texto do Display do erro.
-                    if matches!(err.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
+                    // NXDOMAIN vira NotFound; NODATA (domínio existe, sem esse
+                    // registro) é falha de classificação diferente.
+                    if is_nxdomain(&err) {
                         DnsStatus::NotFound {
                             latency: start.elapsed(),
                         }
@@ -131,5 +145,31 @@ mod tests {
             DnsStatus::NotFound { .. } | DnsStatus::Error { .. } => {}
             DnsStatus::Success { .. } => panic!("domínio .invalid não deveria resolver"),
         }
+    }
+
+    #[test]
+    fn nxdomain_e_nodata_nao_sao_a_mesma_coisa() {
+        use hickory_resolver::proto::op::Query;
+        use hickory_resolver::proto::rr::Name;
+
+        let erro = |code: ResponseCode| {
+            ResolveError::from(ResolveErrorKind::NoRecordsFound {
+                query: Box::new(Query::query(
+                    Name::from_ascii("exemplo.test.").expect("nome válido"),
+                    RecordType::A,
+                )),
+                soa: None,
+                negative_ttl: None,
+                response_code: code,
+                trusted: true,
+            })
+        };
+
+        // O domínio não existe.
+        assert!(is_nxdomain(&erro(ResponseCode::NXDomain)));
+        // O domínio existe, mas não há registro desse tipo (NODATA).
+        assert!(!is_nxdomain(&erro(ResponseCode::NoError)));
+        // Falha do servidor não é domínio inexistente.
+        assert!(!is_nxdomain(&erro(ResponseCode::ServFail)));
     }
 }
