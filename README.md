@@ -31,17 +31,53 @@ sudo setcap cap_net_raw,cap_net_admin=eip target/release/netmon
   literal como `fe80::1`.
 - **Ident ICMP único por processo** (pid XOR bits do relógio), para que duas
   instâncias do netmon na mesma máquina não aceitem o Echo Reply uma da outra.
-- **Lock global no mapa de flows** (`watch.rs`). Contadores por protocolo são
-  atômicos (sem lock), mas o `HashMap` de 5-tuples ainda usa um `RwLock`
-  global. Troca por sharding/`DashMap` fica para quando houver benchmark real.
+- **Lock global no mapa de flows** (`watch.rs`) — medido, não chutado (ver
+  seção Benchmark abaixo). Contadores por protocolo são atômicos (sem lock), mas
+  o `HashMap` de 5-tuples usa um `RwLock` global. Num teste de contenção com
+  1024 fluxos: a 1 thread o lock global faz **6,4 M pacotes/s** e 16 shards
+  fazem 5,4 M/s (hash extra + pior localidade — o simples vence); a 8 threads o
+  lock global **colapsa para 2,1 M/s** (pior que 1 thread!) e os shards chegam a
+  9,3 M/s. Como o design tem **uma thread de captura por interface**, esse
+  cenário multi-thread não existe: `DashMap` **não se justifica agora**. O
+  gatilho está documentado — se o design migrar para N capturas concorrentes,
+  refazer o benchmark e só então trocar.
 - **Fluxos mortos são varridos por tempo** (no máximo 1x/min; fluxo sem tráfego
   por 300s é removido) **e** por tamanho (> 10.000 entradas). Antes a limpeza só
   acontecia acima do teto, então abaixo dele flows mortos ficavam para sempre.
 - **TUI usa `std::sync::RwLock::try_read`** (não-bloqueante): se a thread de
   captura estiver escrevendo, o tick pula a tabela em vez de travar o executor.
-- **Sem números de benchmark inventados.** Para medir de verdade:
-  `iperf3` + `netmon watch` lado a lado com `tcpdump -i <iface> -q -n`,
-  comparando pps, RSS (`/usr/bin/time -v`) e CPU. Até lá, sem tabela de performance.
+- **Sem números de throughput inventados para a captura real.** O benchmark
+  mede o caminho de agregação em userspace (sem NIC e sem parse do `pnet`).
+  Para medir de verdade, ponta a ponta: `iperf3` + `netmon watch` lado a lado
+  com `tcpdump -i <iface> -q -n`, comparando pps, RSS (`/usr/bin/time -v`) e CPU.
+
+## Benchmark (`cargo bench`)
+
+Caminho medido: `TrafficMetrics::record` (contadores atômicos + mapa de
+5-tuples) com 1024 fluxos distintos e pacotes de 1500 B. Máquina: i5-10210U
+(8 threads), 8 GB RAM. O `sharded16` é implementado no próprio benchmark
+(`benches/flows.rs`) como alternativa hipotética — o código de produção não foi
+tocado.
+
+| Cenário | `RwLock` global | 16 shards |
+|---|---|---|
+| 1 thread (design atual) | **6,4 M pacotes/s** | 5,4 M pacotes/s |
+| 2 threads | 3,5 M pacotes/s | **7,2 M pacotes/s** |
+| 4 threads | 2,8 M pacotes/s | **9,0 M pacotes/s** |
+| 8 threads | 2,1 M pacotes/s | **9,3 M pacotes/s** |
+
+Leitura honesta:
+
+- O lock global **colapsa** sob contenção (8 threads rendem menos que 1).
+- Mas hoje há **uma thread de captura por interface**, então a contenção não
+  existe — e no cenário real (1 thread) o simples é ~19% mais rápido.
+- A 1 thread, 6,4 M pacotes/s × 1500 B ≈ **76 Gbps**: a agregação está 2 ordens
+  de grandeza acima de interfaces reais, então não é o gargalo.
+- Ressalvas: sintético (sem NIC real, sem parse do `pnet`), `DefaultHasher`
+  (SipHash) no modelo sharded — um `DashMap` com hasher rápido renderia um
+  pouco mais. O gatilho de troca continua valendo: N capturas concorrentes.
+- Extra (micro, irrelevante para throughput): checksum ICMPv4 de 12 bytes em
+  ~8 ns.
 
 ## Privilégios (decisão de design, não bug)
 

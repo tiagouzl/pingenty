@@ -103,6 +103,49 @@ impl TrafficMetrics {
                 .compare_exchange(last, secs, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
     }
+
+    /// Contabiliza um pacote já classificado: contadores atômicos por protocolo
+    /// (sem lock) + agregação por 5-tuple (com lock do mapa).
+    ///
+    /// Público de propósito: é o ponto que o benchmark de contenção mede, e
+    /// permite alimentar as métricas a partir de outra fonte de captura.
+    pub fn record(&self, tuple: FiveTuple, raw_len: u64) {
+        let g = &self.global_protocols;
+        match tuple.protocol {
+            "TCP" => {
+                g.tcp_bytes.fetch_add(raw_len, Ordering::Relaxed);
+                g.tcp_packets.fetch_add(1, Ordering::Relaxed);
+            }
+            "UDP" => {
+                g.udp_bytes.fetch_add(raw_len, Ordering::Relaxed);
+                g.udp_packets.fetch_add(1, Ordering::Relaxed);
+            }
+            "ICMP" => {
+                g.icmp_bytes.fetch_add(raw_len, Ordering::Relaxed);
+                g.icmp_packets.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {
+                g.other_bytes.fetch_add(raw_len, Ordering::Relaxed);
+                g.other_packets.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let now = Instant::now();
+        let sweep_due = self.due_for_sweep(now);
+
+        if let Ok(mut flows) = self.flows.write() {
+            let flow = flows.entry(tuple).or_default();
+            flow.byte_count += raw_len;
+            flow.packet_count += 1;
+            flow.last_seen = Some(now);
+
+            // Varredura por tempo (máx. 1x por minuto) ou backstop por tamanho.
+            if sweep_due || flows.len() > FLOW_MAX_ENTRIES {
+                flows.retain(|_, v| !is_stale(v, now));
+            }
+        }
+        // Se o lock falhar (poisoned), o pacote é descartado: captura nunca trava.
+    }
 }
 
 /// Fluxo sem tráfego por mais de `FLOW_IDLE_SECS` — candidato a remoção.
@@ -279,49 +322,16 @@ impl PacketWatcher {
             _ => ("OUTRO", 0, 0),
         };
 
-        let g = &metrics.global_protocols;
-        match proto_str {
-            "TCP" => {
-                g.tcp_bytes.fetch_add(raw_len, Ordering::Relaxed);
-                g.tcp_packets.fetch_add(1, Ordering::Relaxed);
-            }
-            "UDP" => {
-                g.udp_bytes.fetch_add(raw_len, Ordering::Relaxed);
-                g.udp_packets.fetch_add(1, Ordering::Relaxed);
-            }
-            "ICMP" => {
-                g.icmp_bytes.fetch_add(raw_len, Ordering::Relaxed);
-                g.icmp_packets.fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {
-                g.other_bytes.fetch_add(raw_len, Ordering::Relaxed);
-                g.other_packets.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let tuple = FiveTuple {
-            src_ip: src,
-            dst_ip: dst,
-            src_port: src_p,
-            dst_port: dst_p,
-            protocol: proto_str,
-        };
-
-        let now = Instant::now();
-        let sweep_due = metrics.due_for_sweep(now);
-
-        if let Ok(mut flows) = metrics.flows.write() {
-            let flow = flows.entry(tuple).or_default();
-            flow.byte_count += raw_len;
-            flow.packet_count += 1;
-            flow.last_seen = Some(now);
-
-            // Varredura por tempo (máx. 1x por minuto) ou backstop por tamanho.
-            if sweep_due || flows.len() > FLOW_MAX_ENTRIES {
-                flows.retain(|_, v| !is_stale(v, now));
-            }
-        }
-        // Se o lock falhar (poisoned), o pacote é descartado: captura nunca trava.
+        metrics.record(
+            FiveTuple {
+                src_ip: src,
+                dst_ip: dst,
+                src_port: src_p,
+                dst_port: dst_p,
+                protocol: proto_str,
+            },
+            raw_len,
+        );
     }
 }
 

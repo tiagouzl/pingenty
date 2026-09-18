@@ -1,19 +1,14 @@
-mod cli;
-mod dns;
-mod ping;
-mod tui;
-mod watch;
-
 use clap::Parser;
-use cli::{Cli, Commands};
-use dns::DnsEngine;
-use ping::PingEngine;
+use netmon::cli::{self, Cli, Commands};
+use netmon::dns::{self, DnsEngine};
+use netmon::ping::PingEngine;
+use netmon::tui;
+use netmon::watch::PacketWatcher;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use watch::PacketWatcher;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
