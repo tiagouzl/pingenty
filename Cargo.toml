@@ -5,6 +5,8 @@ edition = "2021"
 description = "Monitor de rede assíncrono em tempo real com TUI"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tiagouzl/pingenty"
+keywords = ["network", "monitoring", "ping", "dns", "tui"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
