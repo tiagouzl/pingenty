@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod dns;
+pub mod export;
 pub mod ping;
 pub mod tui;
 pub mod watch;

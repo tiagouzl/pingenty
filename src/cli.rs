@@ -99,6 +99,14 @@ pub enum Commands {
         /// RTT médio em ms que dispara alerta no dashboard (0 desliga)
         #[arg(long, default_value_t = 200)]
         alert_rtt: u64,
+
+        /// Anexa amostras de ping em CSV (cria com cabeçalho se novo/vazio)
+        #[arg(long)]
+        export_csv: Option<String>,
+
+        /// Anexa eventos ping+DNS em NDJSON
+        #[arg(long)]
+        export_json: Option<String>,
     },
 }
 

@@ -151,6 +151,8 @@ async fn main() -> Result<(), anyhow::Error> {
             tcp_port,
             alert_loss,
             alert_rtt,
+            export_csv,
+            export_json,
         } => {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
@@ -178,12 +180,21 @@ async fn main() -> Result<(), anyhow::Error> {
             let (ping_tx, ping_rx) = mpsc::unbounded_channel();
             let (dns_tx, dns_rx) = mpsc::unbounded_channel();
 
+            // Export compartilha um writer via Mutex: o callback do ping é
+            // síncrono e o DNS passa por task de repasse — lock curto, sem await.
+            let exporter = std::sync::Arc::new(std::sync::Mutex::new(
+                pingenty::export::Exporter::new(export_csv.as_deref(), export_json.as_deref())?,
+            ));
             let ping_engine = Arc::new(PingEngine::new(ping_interval, ping_timeout, tcp_port));
             for h in p_hosts.clone() {
                 let eng = Arc::clone(&ping_engine);
                 let tx = ping_tx.clone();
+                let exp = std::sync::Arc::clone(&exporter);
                 tokio::spawn(async move {
-                    eng.run_continuous(h, move |sample, _| {
+                    eng.run_continuous(h, move |sample, stats| {
+                        if let Ok(mut e) = exp.lock() {
+                            e.ping(&sample, stats.loss_rate());
+                        }
                         let _ = tx.send(sample);
                     })
                     .await;
@@ -191,13 +202,25 @@ async fn main() -> Result<(), anyhow::Error> {
             }
 
             let dns_engine = Arc::new(DnsEngine::new(dns_timeout)?);
+            let (dns_in_tx, mut dns_in_rx) = mpsc::unbounded_channel();
+            let exp = std::sync::Arc::clone(&exporter);
+            tokio::spawn(async move {
+                while let Some(res) = dns_in_rx.recv().await {
+                    if let Ok(mut e) = exp.lock() {
+                        e.dns(&res);
+                    }
+                    if dns_tx.send(res).is_err() {
+                        break;
+                    }
+                }
+            });
             tokio::spawn(async move {
                 dns_engine
                     .run_continuous(
                         d_domains,
                         cli::RecordTypeCli::A,
                         Duration::from_millis(dns_interval),
-                        dns_tx,
+                        dns_in_tx,
                     )
                     .await;
             });
