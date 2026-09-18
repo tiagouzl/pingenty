@@ -172,6 +172,57 @@ fn strip_vlan_tags(ethertype: EtherType, mut payload: &[u8]) -> (EtherType, &[u8
     (ethertype, payload)
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CaptureStatus {
+    /// Nome da interface em captura, ou `None` quando a captura foi desligada.
+    pub interface: Option<String>,
+    /// Motivo exibido na TUI quando a captura está desligada.
+    pub warning: Option<String>,
+}
+
+impl CaptureStatus {
+    pub fn active(interface_name: String) -> Self {
+        Self {
+            interface: Some(interface_name),
+            warning: None,
+        }
+    }
+
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            interface: None,
+            warning: Some(reason.into()),
+        }
+    }
+}
+
+/// Tenta ligar a captura passiva. Nunca falha o programa: sem permissão
+/// (`CAP_NET_RAW`) ou sem interface, volta com métricas vazias e um aviso para
+/// a TUI exibir — ping e DNS continuam ao vivo.
+pub fn setup_capture(interface: Option<String>) -> (Arc<TrafficMetrics>, CaptureStatus) {
+    let metrics = Arc::new(TrafficMetrics::default());
+    match PacketWatcher::new(interface) {
+        Err(e) => (
+            metrics,
+            CaptureStatus::disabled(format!("sem interface utilizável ({e})")),
+        ),
+        Ok((watcher, iface)) => {
+            match PacketWatcher::start_capture_thread(iface, Arc::clone(&watcher.metrics)) {
+                Ok(()) => (
+                    watcher.metrics,
+                    CaptureStatus::active(watcher.interface_name),
+                ),
+                Err(e) => (
+                    metrics,
+                    CaptureStatus::disabled(format!(
+                        "sem captura: rode com CAP_NET_RAW (setcap) p/ tráfego ({e})"
+                    )),
+                ),
+            }
+        }
+    }
+}
+
 pub struct PacketWatcher {
     pub interface_name: String,
     pub metrics: Arc<TrafficMetrics>,
@@ -586,5 +637,17 @@ mod tests {
         let snap = m.global_protocols.snapshot();
         let total = snap.udp_packets + snap.tcp_packets + snap.icmp_packets + snap.other_packets;
         assert_eq!(total, 0, "frame curto demais não pode ser contado");
+    }
+
+    #[test]
+    fn setup_capture_nunca_aborta_o_dashboard() {
+        // Interface inexistente: sempre cai no downgrade, e o motivo nunca é vazio.
+        let (metrics, capture) = setup_capture(Some("iface-que-nao-existe-xyz".into()));
+        assert!(capture.interface.is_none());
+        assert!(!capture
+            .warning
+            .expect("sem captura sempre explica")
+            .is_empty());
+        assert_eq!(metrics.global_protocols.snapshot().tcp_packets, 0);
     }
 }

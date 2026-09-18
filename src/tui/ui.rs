@@ -18,10 +18,12 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
         ])
         .split(frame.size());
 
-    let header_text = format!(
-        " NETMON :: Monitor de Rede Assíncrono | Interface: [{}] | Tick: 250ms ",
-        state.interface_name
-    );
+    let header_text = match state.capture.interface.as_deref() {
+        Some(iface) => {
+            format!(" NETMON :: Monitor de Rede Assíncrono | Interface: [{iface}] | Tick: 250ms ")
+        }
+        None => " NETMON :: Monitor de Rede Assíncrono | Ping + DNS ao vivo ".to_string(),
+    };
     let header = Paragraph::new(header_text)
         .style(
             Style::default()
@@ -162,7 +164,7 @@ fn render_watch_panel(frame: &mut Frame, state: &AppState, area: Rect) {
     // pula um tick em vez de travar o executor async. Contadores atômicos
     // sempre lidos sem lock.
     let p = state.watcher_metrics.global_protocols.snapshot();
-    let proto_summary = format!(
+    let mut proto_summary = format!(
         "TCP: {} pkts ({} KB) | UDP: {} pkts ({} KB) | ICMP: {} pkts ({} KB) | OUTR: {} pkts ({} KB)",
         p.tcp_packets,
         p.tcp_bytes / 1024,
@@ -173,6 +175,9 @@ fn render_watch_panel(frame: &mut Frame, state: &AppState, area: Rect) {
         p.other_packets,
         p.other_bytes / 1024
     );
+    if let Some(warning) = state.capture.warning.as_deref() {
+        proto_summary = format!("{proto_summary}\n[AVISO] {warning}");
+    }
     frame.render_widget(
         Paragraph::new(proto_summary)
             .style(Style::default().fg(Color::Magenta))
@@ -235,7 +240,7 @@ mod tests {
     use crate::cli::RecordTypeCli;
     use crate::dns::{DnsQueryResult, DnsStatus};
     use crate::ping::PingSample;
-    use crate::watch::{FiveTuple, FlowStat, TrafficMetrics};
+    use crate::watch::{CaptureStatus, FiveTuple, FlowStat, TrafficMetrics};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::net::{IpAddr, Ipv4Addr};
@@ -266,8 +271,8 @@ mod tests {
     fn state_with_hosts(hosts: &[&str]) -> AppState {
         AppState::new(
             hosts.iter().map(|h| h.to_string()).collect(),
-            "eth-test".into(),
             Arc::new(TrafficMetrics::default()),
+            CaptureStatus::active("eth-test".into()),
         )
     }
 
@@ -368,7 +373,11 @@ mod tests {
                 last_seen: Some(Instant::now()),
             },
         );
-        let mut state = AppState::new(vec!["1.1.1.1".into()], "eth-test".into(), metrics);
+        let mut state = AppState::new(
+            vec!["1.1.1.1".into()],
+            metrics,
+            CaptureStatus::active("eth-test".into()),
+        );
         let text = screen_text(&mut state, 200, 30);
         assert!(text.contains("Protocolos Agregados"));
         assert!(text.contains("TCP: 1 pkts (2 KB)"));
@@ -385,8 +394,8 @@ mod tests {
         let hosts: Vec<String> = (0..30).map(|i| format!("h{i}")).collect();
         let mut state = AppState::new(
             hosts,
-            "eth-test".into(),
             Arc::new(TrafficMetrics::default()),
+            CaptureStatus::active("eth-test".into()),
         );
 
         let apertado = render_lines(&mut state, 80, 12);
@@ -414,12 +423,25 @@ mod tests {
         let guard = metrics.flows.write().expect("write lock");
         let mut state = AppState::new(
             vec!["1.1.1.1".into()],
-            "eth-test".into(),
             Arc::clone(&metrics),
+            CaptureStatus::active("eth-test".into()),
         );
         let text = screen_text(&mut state, 100, 30);
         assert!(text.contains("Fluxos Ativos (5-Tuple)"));
         assert!(text.contains("NETMON"));
         drop(guard);
+    }
+
+    #[test]
+    fn header_mostra_aviso_quando_captura_desligada() {
+        let mut state = AppState::new(
+            vec!["1.1.1.1".into()],
+            Arc::new(TrafficMetrics::default()),
+            CaptureStatus::disabled("sem captura: teste"),
+        );
+        let text = screen_text(&mut state, 120, 30);
+        assert!(text.contains("Ping + DNS ao vivo"));
+        assert!(!text.contains("Interface: ["));
+        assert!(text.contains("[AVISO] sem captura: teste"));
     }
 }

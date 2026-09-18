@@ -161,8 +161,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            let (watcher, iface) = PacketWatcher::new(interface)?;
-            PacketWatcher::start_capture_thread(iface, Arc::clone(&watcher.metrics))?;
+            // Captura não é pré-requisito: sem permissão/interface, ping e DNS
+            // seguem ao vivo e o painel de tráfego mostra o motivo.
+            let (metrics, capture) = netmon::watch::setup_capture(interface);
+            eprintln!(">> Dashboard: ping + DNS ao vivo.");
+            if let Some(w) = capture.warning.as_deref() {
+                eprintln!(">> {w}");
+            }
 
             // Canais unbounded: o callback síncrono do ping não pode aguardar
             // envio (não é async), então try_send em canal limitado descartaria
@@ -195,7 +200,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     .await;
             });
 
-            let state = tui::app::AppState::new(p_hosts, watcher.interface_name, watcher.metrics);
+            let state = tui::app::AppState::new(p_hosts, metrics, capture);
             tui::TuiRunner::run(state, ping_rx, dns_rx).await?;
         }
     }

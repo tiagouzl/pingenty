@@ -1,6 +1,6 @@
 use crate::dns::DnsQueryResult;
 use crate::ping::PingSample;
-use crate::watch::TrafficMetrics;
+use crate::watch::{CaptureStatus, TrafficMetrics};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -16,11 +16,11 @@ pub struct AppState {
     pub ping_trackers: Vec<PingHistory>,
     pub dns_results: VecDeque<DnsQueryResult>,
     pub watcher_metrics: Arc<TrafficMetrics>,
-    pub interface_name: String,
+    pub capture: CaptureStatus,
 }
 
 impl AppState {
-    pub fn new(hosts: Vec<String>, interface_name: String, metrics: Arc<TrafficMetrics>) -> Self {
+    pub fn new(hosts: Vec<String>, metrics: Arc<TrafficMetrics>, capture: CaptureStatus) -> Self {
         let ping_trackers = hosts
             .into_iter()
             .map(|host| PingHistory {
@@ -35,7 +35,7 @@ impl AppState {
             ping_trackers,
             dns_results: VecDeque::with_capacity(50),
             watcher_metrics: metrics,
-            interface_name,
+            capture,
         }
     }
 
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn ping_history_tracks_loss() {
         let m = Arc::new(TrafficMetrics::default());
-        let mut app = AppState::new(vec!["h".into()], "eth0".into(), m);
+        let mut app = AppState::new(vec!["h".into()], m, CaptureStatus::active("eth0".into()));
         app.on_ping_sample(PingSample {
             host: "h".into(),
             rtt: None,
