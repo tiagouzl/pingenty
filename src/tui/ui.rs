@@ -79,11 +79,12 @@ fn render_ping_panel(frame: &mut Frame, state: &AppState, area: Rect) {
         } else {
             ((tracker.transmitted - tracker.received) as f64 / tracker.transmitted as f64) * 100.0
         };
+        let rtt_str = tracker
+            .last_rtt
+            .map_or("TIMEOUT".into(), |v| format!("{v} ms"));
         let label = format!(
-            "{} => Atual: {} ms | Perda: {:.1}%",
-            tracker.host,
-            tracker.last_rtt.map_or("TIMEOUT".into(), |v| v.to_string()),
-            loss
+            "{} => Atual: {} | Perda: {:.1}%",
+            tracker.host, rtt_str, loss
         );
         let sub_chunks = Layout::default()
             .direction(Direction::Vertical)

@@ -1,5 +1,7 @@
 # Netmon — Network Monitor Assíncrono em Rust
 
+![Dashboard](demo.gif)
+
 Monitor de latência (ICMP com fallback TCP), resolução DNS com medição de RTT
 e captura passiva de tráfego com agregação por protocolo e por conexão (5-tuple),
 com dashboard TUI ao vivo.
