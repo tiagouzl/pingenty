@@ -1,5 +1,7 @@
 # Pingenty — Network Monitor Assíncrono em Rust
 
+[![CI](https://github.com/tiagouzl/pingenty/actions/workflows/ci.yml/badge.svg)](https://github.com/tiagouzl/pingenty/actions/workflows/ci.yml)
+
 ![Dashboard](demo.gif)
 
 Monitor de latência (ICMP/ICMPv6 com fallback TCP), resolução DNS com medição de
