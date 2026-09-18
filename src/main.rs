@@ -178,6 +178,7 @@ async fn main() -> Result<(), anyhow::Error> {
             alert_rtt,
             export_csv,
             export_json,
+            no_history,
         } => {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
@@ -210,6 +211,11 @@ async fn main() -> Result<(), anyhow::Error> {
             let exporter = std::sync::Arc::new(std::sync::Mutex::new(
                 pingenty::export::Exporter::new(export_csv.as_deref(), export_json.as_deref())?,
             ));
+            if !no_history {
+                if let Ok(mut e) = exporter.lock() {
+                    e.enable_history();
+                }
+            }
             let ping_engine = Arc::new(PingEngine::new(ping_interval, ping_timeout, tcp_port));
             for h in p_hosts.clone() {
                 let eng = Arc::clone(&ping_engine);
@@ -253,6 +259,27 @@ async fn main() -> Result<(), anyhow::Error> {
             let mut state = tui::app::AppState::new(p_hosts, metrics, capture);
             state.set_alert_thresholds(alert_loss, alert_rtt);
             tui::TuiRunner::run(state, ping_rx, dns_rx).await?;
+        }
+
+        Commands::Export { format, last, path } => {
+            let hist = pingenty::export::history_path().ok_or_else(|| {
+                anyhow::anyhow!("sem diretório de histórico (HOME/XDG_DATA_HOME ausentes)")
+            })?;
+            let fmt = match format {
+                cli::ExportFormatCli::Csv => "csv",
+                cli::ExportFormatCli::Json => "json",
+            };
+            let (out, skipped) = pingenty::export::export_history(&hist, fmt, last)?;
+            match path {
+                Some(p) => std::fs::write(&p, &out)?,
+                None => print!("{out}"),
+            }
+            if skipped > 0 {
+                eprintln!(
+                    ">> {skipped} linha(s) malformadas ignoradas em {}",
+                    hist.display()
+                );
+            }
         }
     }
 

@@ -111,7 +111,36 @@ pub enum Commands {
         /// Anexa eventos ping+DNS em NDJSON
         #[arg(long)]
         export_json: Option<String>,
+
+        /// Não grava o histórico persistente (sempre ligado por padrão)
+        #[arg(long)]
+        no_history: bool,
     },
+
+    /// Converte o histórico persistente (stdout se caminho omitido)
+    Export {
+        /// Formato de saída
+        #[arg(long, value_enum, default_value = "csv")]
+        format: ExportFormatCli,
+
+        /// Só eventos dos últimos N segundos (omitido = tudo)
+        #[arg(long)]
+        last: Option<u64>,
+
+        /// Arquivo de saída (omitido = stdout)
+        path: Option<String>,
+    },
+}
+
+/// Formato do `export` (CSV é ping-only; JSON repassa o NDJSON).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ExportFormatCli {
+    /// CSV flat (só ping).
+    #[value(name = "csv")]
+    Csv,
+    /// NDJSON (ping + DNS).
+    #[value(name = "json")]
+    Json,
 }
 
 /// Tipo de registro DNS pedido no `dns` (só leitura pontual; o dashboard usa A).
@@ -212,6 +241,34 @@ mod tests {
                 assert_eq!(alert_rtt, 200);
             }
             _ => panic!("deveria ser dashboard"),
+        }
+    }
+
+    #[test]
+    fn export_aceita_formato_last_e_path() {
+        let cli = Cli::try_parse_from([
+            "pingenty", "export", "--format", "json", "--last", "3600", "/tmp/x",
+        ])
+        .expect("parse do export");
+        match cli.command {
+            Commands::Export { format, last, path } => {
+                assert_eq!(format, ExportFormatCli::Json);
+                assert_eq!(last, Some(3600));
+                assert_eq!(path.as_deref(), Some("/tmp/x"));
+            }
+            _ => panic!("deveria ser export"),
+        }
+        // Defaults: csv, tudo, stdout.
+        match Cli::try_parse_from(["pingenty", "export"])
+            .expect("defaults")
+            .command
+        {
+            Commands::Export { format, last, path } => {
+                assert_eq!(format, ExportFormatCli::Csv);
+                assert_eq!(last, None);
+                assert_eq!(path, None);
+            }
+            _ => panic!("deveria ser export"),
         }
     }
 
