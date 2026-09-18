@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binario-linux:
+    name: build + anexa binário Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain estável
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de build
+        uses: Swatinem/rust-cache@v2
+
+      # pnet_datalink no Linux usa AF_PACKET nativo (sem libpcap).
+      - name: Build de release
+        run: cargo build --release --locked
+
+      - name: Publica asset na release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          asset="pingenty-${tag}-x86_64-linux.tar.gz"
+          tar czf "$asset" -C target/release pingenty
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" --title "$tag" --generate-notes "$asset"
+          fi
