@@ -2,7 +2,7 @@
 name = "pingenty"
 version = "0.1.0"
 edition = "2021"
-description = "Monitor de rede assíncrono com TUI em Rust"
+description = "Monitor de rede assíncrono em tempo real com TUI"
 license = "MIT"
 repository = "https://github.com/tiagouzl/pingenty"
 

@@ -1,4 +1,4 @@
-# Pingenty — Network Monitor Assíncrono em Rust
+# Pingenty — Monitor de Rede Assíncrono em Rust
 
 [![CI](https://github.com/tiagouzl/pingenty/actions/workflows/ci.yml/badge.svg)](https://github.com/tiagouzl/pingenty/actions/workflows/ci.yml)
 

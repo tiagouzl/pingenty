@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "pingenty",
     version,
-    about = "Network Monitor assíncrono em tempo real com TUI"
+    about = "Monitor de rede assíncrono em tempo real com TUI"
 )]
 pub struct Cli {
     #[command(subcommand)]
