@@ -124,11 +124,13 @@ impl PacketWatcher {
                     "Canal de dados não suportado (não-Ethernet)."
                 ))
             }
-            Err(e) => return Err(anyhow::anyhow!(
+            Err(e) => {
+                return Err(anyhow::anyhow!(
                 "Permissão negada ao abrir interface '{}'. Requer root ou CAP_NET_RAW. Erro: {}",
                 iface.name,
                 e
-            )),
+            ))
+            }
         };
 
         std::thread::Builder::new()

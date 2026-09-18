@@ -202,20 +202,19 @@ impl PingEngine {
 
             let dest = SocketAddr::new(IpAddr::V4(target_ip), 0);
             let start = Instant::now();
-            socket.send_to(&echo_req, &dest.into())?;
+
+            // Converte para std::net::UdpSocket: mesma syscall recvfrom(2) no
+            // fd ICMP, mas com API segura (&mut [u8]) em vez de MaybeUninit +
+            // unsafe. A conversão transfere a posse do fd (Socket → UdpSocket).
+            let sock: std::net::UdpSocket = socket.into();
+            sock.send_to(&echo_req, dest)?;
 
             // Deadline absoluto: não aceitar erro intermediário como pong.
             let deadline = start + timeout;
-            let mut buf = [std::mem::MaybeUninit::uninit(); 512];
+            let mut buf = [0u8; 512];
             loop {
-                let (n, _) = socket.recv_from(&mut buf)?;
-                // SAFETY: recv_from escreveu n bytes.
-                let raw: &[u8] =
-                    unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
-                // Copia para buffer alinhado para validação.
-                let mut tmp = [0u8; 512];
-                tmp[..n].copy_from_slice(raw);
-                if is_valid_echo_reply(&tmp, n, ident, seq) {
+                let (n, _) = sock.recv_from(&mut buf)?;
+                if is_valid_echo_reply(&buf, n, ident, seq) {
                     return Ok(start.elapsed());
                 }
                 // Pacote estranho (ex: Destination Unreachable atrasado) — ignora

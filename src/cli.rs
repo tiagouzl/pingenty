@@ -19,8 +19,8 @@ pub enum Commands {
         #[arg(required = true)]
         hosts: Vec<String>,
 
-        /// Intervalo entre pings em milissegundos
-        #[arg(short, long, default_value_t = 1000)]
+        /// Intervalo entre pings em milissegundos (mínimo 50)
+        #[arg(short, long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(50..))]
         interval: u64,
 
         /// Timeout de cada pacote em milissegundos
@@ -43,7 +43,7 @@ pub enum Commands {
         record_type: RecordTypeCli,
 
         /// Timeout por consulta em milissegundos
-        #[arg(short, long, default_value_t = 2000)]
+        #[arg(short, long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(100..))]
         timeout: u64,
     },
 
@@ -71,6 +71,14 @@ pub enum Commands {
         /// Interface de captura passiva
         #[arg(short, long)]
         interface: Option<String>,
+
+        /// Intervalo entre pings em milissegundos (mínimo 50)
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(50..))]
+        ping_interval: u64,
+
+        /// Timeout de cada ping em milissegundos
+        #[arg(long, default_value_t = 1500)]
+        ping_timeout: u64,
     },
 }
 

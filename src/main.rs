@@ -73,7 +73,7 @@ async fn main() -> Result<(), anyhow::Error> {
             timeout,
         } => {
             let engine = Arc::new(DnsEngine::new(timeout)?);
-            let (tx, mut rx) = mpsc::channel(100);
+            let (tx, mut rx) = mpsc::unbounded_channel();
 
             println!(
                 ">> Resolvendo domínios com Hickory-DNS (Record: {:?})...",
@@ -149,6 +149,8 @@ async fn main() -> Result<(), anyhow::Error> {
             ping_hosts,
             dns_domains,
             interface,
+            ping_interval,
+            ping_timeout,
         } => {
             let p_hosts: Vec<String> = ping_hosts
                 .split(',')
@@ -162,16 +164,20 @@ async fn main() -> Result<(), anyhow::Error> {
             let (watcher, iface) = PacketWatcher::new(interface)?;
             PacketWatcher::start_capture_thread(iface, Arc::clone(&watcher.metrics))?;
 
-            let (ping_tx, ping_rx) = mpsc::channel(100);
-            let (dns_tx, dns_rx) = mpsc::channel(100);
+            // Canais unbounded: o callback síncrono do ping não pode aguardar
+            // envio (não é async), então try_send em canal limitado descartaria
+            // amostras sob carga — corrompendo a taxa de perda exibida. A TUI
+            // drena os canais a cada tick (try_recv), então não há acumulação.
+            let (ping_tx, ping_rx) = mpsc::unbounded_channel();
+            let (dns_tx, dns_rx) = mpsc::unbounded_channel();
 
-            let ping_engine = Arc::new(PingEngine::new(1000, 1500, 80));
+            let ping_engine = Arc::new(PingEngine::new(ping_interval, ping_timeout, 80));
             for h in p_hosts.clone() {
                 let eng = Arc::clone(&ping_engine);
                 let tx = ping_tx.clone();
                 tokio::spawn(async move {
                     eng.run_continuous(h, move |sample, _| {
-                        let _ = tx.try_send(sample);
+                        let _ = tx.send(sample);
                     })
                     .await;
                 });

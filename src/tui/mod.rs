@@ -16,8 +16,8 @@ pub struct TuiRunner;
 impl TuiRunner {
     pub async fn run(
         mut state: AppState,
-        mut ping_rx: tokio::sync::mpsc::Receiver<crate::ping::PingSample>,
-        mut dns_rx: tokio::sync::mpsc::Receiver<crate::dns::DnsQueryResult>,
+        mut ping_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ping::PingSample>,
+        mut dns_rx: tokio::sync::mpsc::UnboundedReceiver<crate::dns::DnsQueryResult>,
     ) -> Result<(), anyhow::Error> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();

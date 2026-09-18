@@ -1,5 +1,6 @@
 use crate::cli::RecordTypeCli;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::error::ResolveErrorKind;
 use hickory_resolver::proto::rr::RecordType;
 use hickory_resolver::TokioAsyncResolver;
 use std::sync::Arc;
@@ -71,14 +72,15 @@ impl DnsEngine {
                     }
                 }
                 Ok(Err(err)) => {
-                    let err_str = err.to_string();
-                    if err_str.contains("NoRecordsFound") || err_str.contains("NXDomain") {
+                    // Detecção tipada via ResolveErrorKind, sem depender do
+                    // texto do Display do erro.
+                    if matches!(err.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
                         DnsStatus::NotFound {
                             latency: start.elapsed(),
                         }
                     } else {
                         DnsStatus::Error {
-                            message: err_str,
+                            message: err.to_string(),
                             latency: start.elapsed(),
                         }
                     }
@@ -100,12 +102,12 @@ impl DnsEngine {
         domains: Vec<String>,
         record_type: RecordTypeCli,
         interval: Duration,
-        tx: tokio::sync::mpsc::Sender<DnsQueryResult>,
+        tx: tokio::sync::mpsc::UnboundedSender<DnsQueryResult>,
     ) {
         loop {
             for domain in &domains {
                 let result = self.resolve(domain, record_type).await;
-                if tx.send(result).await.is_err() {
+                if tx.send(result).is_err() {
                     return;
                 }
             }
