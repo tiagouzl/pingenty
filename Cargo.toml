@@ -14,8 +14,6 @@ hickory-resolver = "0.24"
 pnet = "0.34"
 socket2 = { version = "0.5", features = ["all"] }
 anyhow = "1.0"
-thiserror = "1.0"
-chrono = "0.4"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
